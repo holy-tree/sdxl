@@ -246,7 +246,7 @@ class TestConfig:
     limit: Optional[int] = None
 
     # ----- inference -----
-    resolution: int = 1024
+    resolution: int = 512
     mixed_precision: str = "bf16"
     num_inference_steps: int = 20
     guidance_scale: float = 5.0
@@ -266,7 +266,8 @@ class TestConfig:
     save_individual: bool = True
     save_comparison: bool = True
 
-    # ----- speed -----
+    # ----- preprocessing / speed -----
+    image_interpolation_mode: str = "bilinear"
     enable_xformers_memory_efficient_attention: bool = False
     attention_backend: str = "auto"
     enable_model_cpu_offload: bool = False

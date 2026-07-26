@@ -14,14 +14,14 @@ variant: null                     # null | fp16 | bf16
 revision: null
 
 # ---------- 输入 / 输出 ----------
-lq_dir: "./experiment/test_imgs"
-gt_dir: null                      # 可选: 用于生成 GT | LQ | Restored 三联图
-output_dir: "./experiment/test_results"
-file_extension: ".png"            # 输入图扩展名
-limit: null                       # 最多处理多少张图, null = 全部
+lq_dir: "/root/autodl-tmp/datasets/snow/test/LQ"
+gt_dir: "/root/autodl-tmp/datasets/snow/test/GT"                     # 可选: 用于生成 GT | LQ | Restored 三联图
+output_dir: "/root/autodl-tmp/sdxl/experiment/test_results"
+file_extension: ".jpg"            # 输入图扩展名
+limit: 3                       # 最多处理多少张图, null = 全部
 
 # ---------- 推理参数 ----------
-resolution: 1024
+resolution: 512
 mixed_precision: "bf16"           # fp32 | fp16 | bf16
 num_inference_steps: 20
 guidance_scale: 5.0
@@ -46,7 +46,7 @@ save_comparison: true             # 保存 LQ | Restored | GT 三联图
 
 # ---------- 加速 ----------
 attention_backend: "auto"
-enable_xformers_memory_efficient_attention: false
+enable_xformers_memory_efficient_attention: true
 enable_model_cpu_offload: false
 
 # ---------- 报告 ----------
