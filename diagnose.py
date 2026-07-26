@@ -132,19 +132,31 @@ def build_pipeline(pretrained_dir: str, controlnet_dir: str, use_trained_cn: boo
     # 5. Scheduler
     scheduler = DDPMScheduler.from_pretrained(pretrained_dir, subfolder="scheduler")
 
-    # 6. ControlNet
+    # 6. ControlNet - 手动加载，不走 Hub 验证
     if use_trained_cn:
-        # 直接从本地目录加载 config + 权重
-        cn_cfg = load_config_json(controlnet_dir)
-        cn_state = torch.load(
-            os.path.join(controlnet_dir, "diffusion_pytorch_model.bin"),
-            map_location="cpu"
-        )
-        # 尝试 safetensors
-        if not os.path.exists(os.path.join(controlnet_dir, "diffusion_pytorch_model.bin")):
+        import json
+        cfg_path = os.path.join(controlnet_dir, "config.json")
+        with open(cfg_path) as f:
+            cn_cfg = json.load(f)
+
+        weight_bin = os.path.join(controlnet_dir, "diffusion_pytorch_model.bin")
+        weight_safetensors = os.path.join(controlnet_dir, "diffusion_pytorch_model.safetensors")
+
+        if os.path.exists(weight_safetensors):
             from safetensors.torch import load_file as safe_load
-            cn_state = safe_load(os.path.join(controlnet_dir, "diffusion_pytorch_model.safetensors"))
-        cn = ControlNetModel.from_pretrained(controlnet_dir, torch_dtype=WEIGHT_DTYPE)
+            state_dict = safe_load(weight_safetensors)
+        elif os.path.exists(weight_bin):
+            state_dict = torch.load(weight_bin, map_location="cpu")
+        else:
+            raise FileNotFoundError(
+                f"No weight file found in {controlnet_dir}: "
+                f"expected diffusion_pytorch_model.bin or diffusion_pytorch_model.safetensors"
+            )
+
+        # 用 config 创建模型，再加载权重
+        cn = ControlNetModel.from_config(**cn_cfg)
+        cn.load_state_dict(state_dict, strict=False)
+        cn.to(dtype=WEIGHT_DTYPE)
     else:
         # 从 UNet 初始化 (零卷积)
         cn = ControlNetModel.from_unet(unet)
