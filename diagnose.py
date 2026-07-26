@@ -286,31 +286,35 @@ def main():
     del pipe
     torch.cuda.empty_cache()
 
+    # ============ TEST E ============
+    print("\n===== TEST E: trained CN + bf16 VAE, cn_scale=0.1 (缩小残差) =====")
+    pipe = build_pipeline(args.pretrained_dir, args.controlnet_dir,
+                          use_trained_cn=True, fp32_vae=False)
+    img_e, info_e = run(pipe, cond_pil, "E_trained_scale0.1", 0.1, args.out_dir)
+    del pipe
+    torch.cuda.empty_cache()
+
+    # ============ TEST F ============
+    print("\n===== TEST F: trained CN + bf16 VAE, cn_scale=0.5 =====")
+    pipe = build_pipeline(args.pretrained_dir, args.controlnet_dir,
+                          use_trained_cn=True, fp32_vae=False)
+    img_f, info_f = run(pipe, cond_pil, "F_trained_scale0.5", 0.5, args.out_dir)
+    del pipe
+    torch.cuda.empty_cache()
+
     print("\n===== 汇总 =====")
     print(f"  A (dummy CN, scale=0):             mean={info_a['mean']:6.2f}  std={info_a['std']:6.2f}  max={info_a['max']:.0f}")
     print(f"  B (trained, bf16 VAE, scale=1):    mean={info_b['mean']:6.2f}  std={info_b['std']:6.2f}  max={info_b['max']:.0f}")
     print(f"  C (trained, bf16 VAE, scale=0):    mean={info_c['mean']:6.2f}  std={info_c['std']:6.2f}  max={info_c['max']:.0f}")
     print(f"  D (trained, fp32 VAE, scale=1):    mean={info_d['mean']:6.2f}  std={info_d['std']:6.2f}  max={info_d['max']:.0f}")
+    print(f"  E (trained, bf16 VAE, scale=0.1):  mean={info_e['mean']:6.2f}  std={info_e['std']:6.2f}  max={info_e['max']:.0f}")
+    print(f"  F (trained, bf16 VAE, scale=0.5):  mean={info_f['mean']:6.2f}  std={info_f['std']:6.2f}  max={info_f['max']:.0f}")
     print(f"\n所有结果: {args.out_dir}")
 
     print("\n诊断结论判断:")
-    all_normal = all(info["std"] > 30 for info in [info_a, info_b, info_c, info_d])
-    all_black = all(info["std"] < 5 for info in [info_a, info_b, info_c, info_d])
-
-    if all_black:
-        print("  ⚠ 全部测试都全黑 → 管线配置有严重问题（权重加载失败/dtype错误等）")
-    elif all_normal:
-        print("  ✓ 全部测试都正常 → 不是 ControlNet 问题，可能是保存/读取流程有误")
-    elif info_a["std"] < 5:
-        print("  ⚠ TEST A 全黑 →  base SDXL 本身有问题 (权重/精度/dtype)")
-    elif info_b["std"] < 5 and info_c["std"] > 30:
-        print("  ⚠ A 正常, C 正常, B 全黑 →  ControlNet 残差是元凶 (训练崩坏或 conditioning 不匹配)")
-    elif info_b["std"] < 5 and info_c["std"] < 5:
-        print("  ⚠ A 正常, C 也全黑 →  trained CN 即使 scale=0 也破坏输出 (异常)")
-    elif info_b["std"] < 5 and info_d["std"] > 30:
-        print("  ⚠ A 正常, B 全黑, D 正常 →  bf16 VAE 是元凶")
-    else:
-        print("  混合结果，请贴给开发者分析")
+    print("  - 如果 E (scale=0.1) 或 F (scale=0.5) 的 std > 50 → 证实 ControlNet 残差过大，把 UNet 推到饱和")
+    print("    解决方案: 调小 controlnet_conditioning_scale, 或降低 learning_rate 重新训练")
+    print("  - 如果 E/F 仍然接近纯灰 → 训练崩坏，需要从头重训")
 
 
 if __name__ == "__main__":
