@@ -310,6 +310,8 @@ def main() -> None:
             if args.print_color_stats:
                 _color_stats(gt_pil, "GT")
 
+        prompt = base_prompt or (_auto_prompt_for(lq_path.stem, weather_prompts) if auto_prompt else "")
+
         for sample_idx in range(int(args.sample_times or 1)):
             generator = None
             if args.seed is not None:
