@@ -17,7 +17,7 @@ controlnet_model_name_or_path: null
 revision: null                    # 模型仓库版本 (branch/tag/sha)
 variant: null                     # 模型权重变体 (如 "fp16" / "bf16")
 output_dir: "/root/autodl-tmp/sdxl/experiment/weather_controlnet"
-resume_from_checkpoint: null
+resume_from_checkpoint: "checkpoint-16000"
 
 # ---------- 数据 ----------
 dataset_root: "/root/autodl-tmp/datasets"
@@ -45,11 +45,11 @@ weather_prompts:
   frost: "frosted scene, icy texture, frozen edges, cold blue tone"
 
 # ---------- 训练超参数 ----------
-learning_rate: 1.0e-5
+learning_rate: 2.0e-6                # 继续训练用更小 LR 校准 ControlNet 残差幅度
 train_batch_size: 16
 gradient_accumulation_steps: 1
-num_train_epochs: 5
-max_train_steps: 50000
+num_train_epochs: 2                  # 接着训 2 个 epoch 就够
+max_train_steps: 3000                # 上限 3000 步, 防过度
 seed: 42
 mixed_precision: "bf16"
 gradient_checkpointing: false
@@ -62,6 +62,8 @@ max_grad_norm: 1.0
 set_grads_to_none: true
 scale_lr: false
 l1_weight: 0.5
+pixel_l1_weight: 1.0                # 像素空间 L1 (对齐 GT 亮度), 1.0 起手, 视效果调
+pixel_l1_every_n_steps: 5           # VAE decode 开销大, 每 5 步算一次像素 L1
 
 # ---------- 学习率调度 ----------
 lr_scheduler: "cosine"

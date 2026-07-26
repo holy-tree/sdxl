@@ -119,6 +119,8 @@ class TrainConfig:
     set_grads_to_none: bool = True
     scale_lr: bool = False
     l1_weight: float = 0.0              # L1 损失权重 (与 MSE 加权求和), 0 = 关闭, 常用 0.1~1.0
+    pixel_l1_weight: float = 0.0       # 像素空间 L1 损失权重 (在 VAE 解码后的 RGB 上), 0 = 关闭, 1.0~10.0
+    pixel_l1_every_n_steps: int = 1   # 每 N 步算一次像素 L1, 1 = 每步, >1 加速但损失梯度更新变慢
 
     # ----- LR scheduler -----
     lr_scheduler: str = "cosine"

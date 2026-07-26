@@ -957,6 +957,24 @@ def main() -> None:
                 if getattr(args, "l1_weight", 0.0) > 0:
                     loss = loss + args.l1_weight * F.l1_loss(model_pred.float(), target.float(), reduction="mean")
 
+                # 像素空间 L1: 从 noise prediction 反推 x0, VAE 解码, 与 GT 像素 L1
+                # 直接约束解码后 RGB 亮度, 解决 ControlNet 过校正/欠校正导致偏暗/偏亮的问题
+                pixel_l1_w = float(getattr(args, "pixel_l1_weight", 0.0))
+                if pixel_l1_w > 0 and step % int(getattr(args, "pixel_l1_every_n_steps", 1)) == 0:
+                    alphas = noise_scheduler.alphas_cumprod.to(noisy_latents.device)[timesteps]
+                    alphas = alphas.view(-1, 1, 1, 1).to(noisy_latents.dtype)
+                    beta = 1.0 - alphas
+                    # x0 = (noisy - sqrt(beta) * noise_pred) / sqrt(alpha)
+                    pred_x0 = (noisy_latents - beta.sqrt() * model_pred) / alphas.sqrt()
+                    pred_x0 = pred_x0.clamp(-3.0, 3.0)
+                    # VAE decode: cast 到 VAE dtype, 除 scaling_factor
+                    pred_rgb = vae.decode(
+                        (pred_x0 / vae.config.scaling_factor).to(vae.dtype)
+                    ).sample.clamp(-1.0, 1.0)
+                    gt_rgb = batch["pixel_values"].to(pred_rgb.dtype).clamp(-1.0, 1.0)
+                    pixel_l1 = F.l1_loss(pred_rgb, gt_rgb, reduction="mean")
+                    loss = loss + pixel_l1_w * pixel_l1
+
                 if torch.isnan(loss).any().item() or torch.isinf(loss).any().item():
                     logger.warning(f"step {global_step}: loss is NaN/Inf, skipping")
 
