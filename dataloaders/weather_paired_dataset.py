@@ -510,7 +510,10 @@ def encode_weather_prompts(
         prompt_list = [""] * len(dataset)
         print(f"[数据集] 跳过 prompt 提取, 直接使用 {len(dataset)} 个空 prompt (use_prompt=False)")
     else:
-        prompt_list = [dataset[int(i)]["prompt"] for i in range(len(dataset))]
+        # Fast path: 不走 __getitem__ (会触发 PIL decode + resize + center_crop,
+        # 单线程遍历 30k 样本约 15 分钟), 直接从 dataset.samples 读取 weather 字段.
+        # _make_prompt 调用顺序与原代码一致, RNG 序列保持不变, prompt_list 字节级一致.
+        prompt_list = [dataset._make_prompt(s.weather) for s in dataset.samples]
 
     if proportion_empty_prompts > 0:
         prompt_list = ["" if random.random() < proportion_empty_prompts else p for p in prompt_list]
