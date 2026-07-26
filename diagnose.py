@@ -240,12 +240,31 @@ def build_pipeline(
     pipeline = pipeline.to(DEVICE)
     pipeline.set_progress_bar_config(disable=True)
 
+    # 关键: bf16 latents + fp32 VAE 时, PyTorch 不会自动 cast, 必须显式 wrap
+    if fp32_vae:
+        _wrap_vae_decode_for_fp32(pipeline.vae)
+
     print(
         f"  vae={pipeline.vae.dtype}  unet={pipeline.unet.dtype}  "
         f"cn={pipeline.controlnet.dtype}  te1={pipeline.text_encoder.dtype}  "
         f"te2={pipeline.text_encoder_2.dtype}"
     )
     return pipeline
+
+
+def _wrap_vae_decode_for_fp32(vae):
+    """Wrap vae.decode so that bf16 latents are cast to vae.dtype before decoding.
+
+    训练时 VAE 是 fp32 (train.py:687), 推理时若把 VAE 维持在 fp32 而 UNet 仍 bf16,
+    scheduler 输出的 latents 是 bf16, 直接 decode 会触发:
+        RuntimeError: Input type (c10::BFloat16) and bias type (float) should be the same
+    """
+    original_decode = vae.decode
+    def _wrapped(latents, *args, **kwargs):
+        if latents.dtype != vae.dtype:
+            latents = latents.to(vae.dtype)
+        return original_decode(latents, *args, **kwargs)
+    vae.decode = _wrapped
 
 
 # ---------------------------------------------------------------------------
