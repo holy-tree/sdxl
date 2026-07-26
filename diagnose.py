@@ -139,8 +139,8 @@ def build_pipeline(pretrained_dir: str, controlnet_dir: str, use_trained_cn: boo
         with open(cfg_path) as f:
             cn_cfg = json.load(f)
 
-        weight_bin = os.path.join(controlnet_dir, "diffusion_pytorch_model.bin")
         weight_safetensors = os.path.join(controlnet_dir, "diffusion_pytorch_model.safetensors")
+        weight_bin = os.path.join(controlnet_dir, "diffusion_pytorch_model.bin")
 
         if os.path.exists(weight_safetensors):
             from safetensors.torch import load_file as safe_load
@@ -153,8 +153,8 @@ def build_pipeline(pretrained_dir: str, controlnet_dir: str, use_trained_cn: boo
                 f"expected diffusion_pytorch_model.bin or diffusion_pytorch_model.safetensors"
             )
 
-        # 用 config 创建模型，再加载权重
-        cn = ControlNetModel.from_config(**cn_cfg)
+        # 直接用字典创建模型，再加载权重
+        cn = ControlNetModel.from_config(cn_cfg)
         cn.load_state_dict(state_dict, strict=False)
         cn.to(dtype=WEIGHT_DTYPE)
     else:
