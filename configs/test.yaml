@@ -1,0 +1,53 @@
+# =====================================================================
+# SDXL + ControlNet 推理/可视化配置 (雨/雪/雾恶劣天气恢复)
+# =====================================================================
+# 用法:
+#   python test.py --config configs/test.yaml
+#   python test.py --lq_dir path/to/lq --gt_dir path/to/gt --controlnet_path ./out
+# =====================================================================
+
+# ---------- 模型路径 ----------
+pretrained_model_name_or_path: "stabilityai/stable-diffusion-xl-base-1.0"
+pretrained_vae_model_name_or_path: null
+controlnet_path: "./experiment/weather_controlnet"
+variant: "fp16"                   # null | fp16 | bf16
+revision: null
+
+# ---------- 输入 / 输出 ----------
+lq_dir: "./experiment/test_imgs"
+gt_dir: null                      # 可选: 用于生成 GT | LQ | Restored 三联图
+output_dir: "./experiment/test_results"
+file_extension: ".png"            # 输入图扩展名
+limit: null                       # 最多处理多少张图, null = 全部
+
+# ---------- 推理参数 ----------
+resolution: 1024
+mixed_precision: "bf16"           # fp32 | fp16 | bf16
+num_inference_steps: 20
+guidance_scale: 5.0
+controlnet_conditioning_scale: 1.0
+seed: 42
+sample_times: 1
+
+# ---------- Prompt (默认全部空, 纯 ControlNet 条件恢复) ----------
+prompt: ""
+negative_prompt: "dotted, noise, blur, lowres, smooth"
+weather_prompts:
+  rain: "rainy scene, rain streaks on the image, wet surfaces, overcast sky"
+  snow: "snowy scene, snowflakes covering the image, cold atmosphere, white noise"
+  haze: "hazy scene, foggy atmosphere, low visibility, grayish tone"
+auto_weather_prompt: false        # true: 根据文件名 weather_xxx.png 自动选 prompt
+
+# ---------- 后处理 ----------
+conditioning_type: "lq"           # lq | gray | canny
+align_method: "none"              # none | wavelet | adain
+save_individual: true             # 单独保存恢复结果
+save_comparison: true             # 保存 LQ | Restored | GT 三联图
+
+# ---------- 加速 ----------
+enable_xformers_memory_efficient_attention: false
+enable_model_cpu_offload: false
+
+# ---------- 报告 ----------
+print_model_info: true
+print_color_stats: true

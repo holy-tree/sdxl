@@ -1,0 +1,108 @@
+# =====================================================================
+# SDXL + ControlNet 训练配置 (雨/雪/雾等恶劣天气图像恢复)
+# =====================================================================
+# 用法:
+#   python train.py --config configs/train.yaml
+#
+# 训练时只更新 ControlNet 权重, SDXL 的 UNet/VAE/Text Encoder 全部冻结.
+# 数据集目录结构:
+#   <dataset_root>/<weather>/<split>/{GT,LQ}/<image>.png
+#   weather ∈ {rain, snow, haze, ...}, split ∈ {train, val, test}
+# =====================================================================
+
+# ---------- 路径 ----------
+pretrained_model_name_or_path: "stabilityai/stable-diffusion-xl-base-1.0"
+pretrained_vae_model_name_or_path: null
+controlnet_model_name_or_path: null
+revision: null                    # 模型仓库版本 (branch/tag/sha)
+variant: null                     # 模型权重变体 (如 "fp16" / "bf16")
+output_dir: "./experiment/weather_controlnet"
+resume_from_checkpoint: null
+
+# ---------- 数据 ----------
+dataset_root: "D:/Projects/pycharm/WeaFU-main/dataprocess"
+weather_types: ["rain", "snow", "haze"]
+splits: ["train"]
+resolution: 512
+conditioning_type: "lq"            # lq | gray | canny
+
+# 按天气类型限制训练样本数, <=0 或缺省 = 不限制
+weather_num_samples:
+  rain: 2
+  snow: 2
+  haze: 2
+
+# ---------- Prompt / CFG ----------
+use_prompt: false
+prompt_ratio: 0.2
+proportion_empty_prompts: 0.0
+null_text_ratio: 0.5
+weather_prompts:
+  rain: "rainy scene, rain streaks on the image, wet surfaces, overcast sky"
+  snow: "snowy scene, snowflakes covering the image, cold atmosphere, white noise"
+  haze: "hazy scene, foggy atmosphere, low visibility, grayish tone"
+  fog:  "foggy scene, low visibility, soft white veil over the landscape"
+  frost: "frosted scene, icy texture, frozen edges, cold blue tone"
+
+# ---------- 训练超参数 ----------
+learning_rate: 5.0e-5
+train_batch_size: 4
+gradient_accumulation_steps: 1
+num_train_epochs: 5
+max_train_steps: 10
+seed: 42
+mixed_precision: "bf16"
+gradient_checkpointing: true
+use_8bit_adam: false
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_weight_decay: 0.01
+adam_epsilon: 1.0e-08
+max_grad_norm: 1.0
+set_grads_to_none: true
+scale_lr: false
+
+# ---------- 学习率调度 ----------
+lr_scheduler: "cosine"
+lr_warmup_steps: 500
+lr_num_cycles: 0.5
+lr_power: 1.0
+
+# ---------- DataLoader ----------
+dataloader_num_workers: 2
+image_interpolation_mode: "lanczos"
+augment: true
+
+# ---------- SDXL crop coordinates ----------
+crops_coords_top_left_h: 0
+crops_coords_top_left_w: 0
+
+# ---------- 优化 / 加速 ----------
+enable_xformers_memory_efficient_attention: false
+enable_npu_flash_attention: false
+allow_tf32: false
+
+# ---------- Checkpointing ----------
+checkpointing_steps: 2
+checkpoints_total_limit: 3
+
+# ---------- 日志 ----------
+logging_dir: "logs"
+report_to: "tensorboard"
+tracker_project_name: "sdxl_weather_controlnet"
+push_to_hub: false
+hub_token: null
+hub_model_id: null
+
+# ---------- 验证 (in-training inference) ----------
+# 验证集从 <dataset_root>/<weather>/test/LQ 自动发现, 每个天气选 num_validation_images 张.
+#   例: num_validation_images=2, weather_types=[rain, snow, haze]  -> 每 500 步共 6 张验证图
+# 如需手动指定, 把 validation_image 设为单路径或路径列表即可覆盖自动选择
+run_validation: true
+validation_steps: 500
+num_validation_images: 1          # 每个天气验证时取的 LQ 数量
+#validation_image: null            # 单张 LQ 路径 / 列表 / null (= 自动)
+validation_prompt: ""             # 与 validation_image 一一对应, 默认空
+validation_guidance_scale: 5.0
+validation_inference_steps: 20
+validation_negative_prompt: "dotted, noise, blur, lowres, smooth"
