@@ -543,6 +543,9 @@ def main() -> None:
         target_size=target_size,
         proportion_empty_prompts=args.proportion_empty_prompts,
         batch_size=max(1, args.train_batch_size * 2),
+        skip_prompt_extraction=(
+            not args.use_prompt and args.proportion_empty_prompts == 0.0
+        ),
     )
 
     del text_encoder_one, text_encoder_two, tokenizer_one, tokenizer_two

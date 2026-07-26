@@ -483,8 +483,16 @@ def encode_weather_prompts(
     target_size: Tuple[int, int],
     proportion_empty_prompts: float = 0.0,
     batch_size: int = 8,
+    skip_prompt_extraction: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Pre-compute SDXL text embeddings for the full dataset.
+
+    Args:
+        skip_prompt_extraction: When ``True``, skip the per-sample ``dataset[i]`` walk
+            (which triggers full PIL decode + resize + center-crop just to read the
+            ``prompt`` field). Useful when every prompt is known to be empty
+            (``use_prompt=False`` and ``proportion_empty_prompts=0``), saving minutes
+            of startup time on medium/large datasets.
 
     Returns:
         prompt_embeds: ``[N, 77, 2048]``
@@ -498,7 +506,11 @@ def encode_weather_prompts(
         list(original_size + crops_coords_top_left + target_size), dtype=torch.float32
     )
 
-    prompt_list = [dataset[int(i)]["prompt"] for i in range(len(dataset))]
+    if skip_prompt_extraction:
+        prompt_list = [""] * len(dataset)
+        print(f"[数据集] 跳过 prompt 提取, 直接使用 {len(dataset)} 个空 prompt (use_prompt=False)")
+    else:
+        prompt_list = [dataset[int(i)]["prompt"] for i in range(len(dataset))]
 
     if proportion_empty_prompts > 0:
         prompt_list = ["" if random.random() < proportion_empty_prompts else p for p in prompt_list]
@@ -586,6 +598,7 @@ def build_precomputed_dataset(
     target_size: Tuple[int, int],
     proportion_empty_prompts: float = 0.0,
     batch_size: int = 8,
+    skip_prompt_extraction: bool = False,
 ) -> PrecomputedEmbeddingDataset:
     pe, te, ti = encode_weather_prompts(
         dataset=dataset,
@@ -597,5 +610,6 @@ def build_precomputed_dataset(
         target_size=target_size,
         proportion_empty_prompts=proportion_empty_prompts,
         batch_size=batch_size,
+        skip_prompt_extraction=skip_prompt_extraction,
     )
     return PrecomputedEmbeddingDataset(dataset, pe, te, ti)
