@@ -260,9 +260,6 @@ def _log_validation(
     vae: Optional[AutoencoderKL],
     unet: Optional[UNet2DConditionModel],
     controlnet: Optional[ControlNetModel],
-    text_encoders: Optional[List[torch.nn.Module]],
-    tokenizers: Optional[List],
-    scheduler,
     args,
     accelerator: Accelerator,
     weight_dtype: torch.dtype,
@@ -278,47 +275,29 @@ def _log_validation(
     else:
         controlnet = ControlNetModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
         if args.pretrained_vae_model_name_or_path is not None:
-            vae = AutoencoderKL.from_pretrained(args.pretrained_vae_model_name_or_path, torch_dtype=weight_dtype)
+            vae = AutoencoderKL.from_pretrained(
+                args.pretrained_vae_model_name_or_path, torch_dtype=weight_dtype, local_files_only=True
+            )
         else:
             vae = AutoencoderKL.from_pretrained(
-                args.pretrained_model_name_or_path, subfolder="vae", torch_dtype=weight_dtype
+                args.pretrained_model_name_or_path, subfolder="vae", torch_dtype=weight_dtype, local_files_only=True
             )
             unet = UNet2DConditionModel.from_pretrained(
-                args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
+                args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant,
+                local_files_only=True,
             )
 
-    if text_encoders is not None and tokenizers is not None and scheduler is not None:
-        for te in text_encoders:
-            if te is not None:
-                te.eval()
-        pipeline = StableDiffusionXLControlNetPipeline(
-            vae=vae,
-            text_encoder=text_encoders[0],
-            text_encoder_2=text_encoders[1],
-            tokenizer=tokenizers[0],
-            tokenizer_2=tokenizers[1],
-            unet=unet,
-            controlnet=controlnet,
-            scheduler=scheduler,
-            force_zeros_for_empty_prompt=True,
-        )
-    else:
-        pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
-            args.pretrained_model_name_or_path,
-            vae=vae,
-            text_encoder=text_encoders[0] if text_encoders else None,
-            text_encoder_2=text_encoders[1] if text_encoders else None,
-            tokenizer=tokenizers[0] if tokenizers else None,
-            tokenizer_2=tokenizers[1] if tokenizers else None,
-            unet=unet,
-            controlnet=controlnet,
-            scheduler=scheduler,
-            revision=args.revision,
-            variant=args.variant,
-            torch_dtype=weight_dtype,
-        )
-
-    if isinstance(pipeline.scheduler, (DDPMScheduler,)) and not is_final_validation:
+    pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
+        args.pretrained_model_name_or_path,
+        vae=vae,
+        unet=unet,
+        controlnet=controlnet,
+        revision=args.revision,
+        variant=args.variant,
+        torch_dtype=weight_dtype,
+        local_files_only=True,
+    )
+    if not is_final_validation:
         pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
@@ -753,17 +732,6 @@ def main() -> None:
         ),
     )
 
-    if args.run_validation and args.validation_steps > 0:
-        validation_scheduler = UniPCMultistepScheduler.from_pretrained(
-            args.pretrained_model_name_or_path, subfolder="scheduler"
-        )
-        val_text_encoders = [text_encoder_one, text_encoder_two]
-        val_tokenizers = [tokenizer_one, tokenizer_two]
-    else:
-        validation_scheduler = None
-        val_text_encoders = None
-        val_tokenizers = None
-
     del text_encoder_one, text_encoder_two, tokenizer_one, tokenizer_two
     gc.collect()
     if torch.cuda.is_available():
@@ -963,9 +931,6 @@ def main() -> None:
                             vae=vae,
                             unet=unet,
                             controlnet=controlnet,
-                            text_encoders=val_text_encoders,
-                            tokenizers=val_tokenizers,
-                            scheduler=validation_scheduler,
                             args=args,
                             accelerator=accelerator,
                             weight_dtype=weight_dtype,
@@ -988,9 +953,6 @@ def main() -> None:
                 vae=None,
                 unet=None,
                 controlnet=None,
-                text_encoders=None,
-                tokenizers=None,
-                scheduler=None,
                 args=args,
                 accelerator=accelerator,
                 weight_dtype=weight_dtype,
