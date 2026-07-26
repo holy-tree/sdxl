@@ -173,7 +173,7 @@ def build_pipeline(pretrained_dir: str, controlnet_dir: str, use_trained_cn: boo
     return pipeline
 
 
-def run(pipeline, cond, tag, controlnet_scale):
+def run(pipeline, cond, tag, controlnet_scale, out_dir):
     generator = torch.Generator(device=DEVICE).manual_seed(SEED)
     image = pipeline(
         prompt="",
@@ -187,7 +187,7 @@ def run(pipeline, cond, tag, controlnet_scale):
         generator=generator,
     ).images[0]
     info = stats(image, f"{tag} (scale={controlnet_scale})")
-    out_path = os.path.join(args.out_dir, f"{tag}.png")
+    out_path = os.path.join(out_dir, f"{tag}.png")
     image.save(out_path)
     print(f"  saved -> {out_path}")
     return image, info
@@ -246,7 +246,7 @@ def main():
     print("\n===== TEST A: dummy CN, cn_scale=0 (与无 ControlNet 等价) =====")
     pipe = build_pipeline(args.pretrained_dir, args.controlnet_dir,
                           use_trained_cn=False, fp32_vae=False)
-    img_a, info_a = run(pipe, cond_pil, "A_dummy_scale0", 0.0)
+    img_a, info_a = run(pipe, cond_pil, "A_dummy_scale0", 0.0, args.out_dir)
     del pipe
     torch.cuda.empty_cache()
 
@@ -254,7 +254,7 @@ def main():
     print("\n===== TEST B: trained CN + bf16 VAE, cn_scale=1 (复现 _log_validation) =====")
     pipe = build_pipeline(args.pretrained_dir, args.controlnet_dir,
                           use_trained_cn=True, fp32_vae=False)
-    img_b, info_b = run(pipe, cond_pil, "B_trained_bf16vae_scale1", 1.0)
+    img_b, info_b = run(pipe, cond_pil, "B_trained_bf16vae_scale1", 1.0, args.out_dir)
     del pipe
     torch.cuda.empty_cache()
 
@@ -262,7 +262,7 @@ def main():
     print("\n===== TEST C: trained CN + bf16 VAE, cn_scale=0 =====")
     pipe = build_pipeline(args.pretrained_dir, args.controlnet_dir,
                           use_trained_cn=True, fp32_vae=False)
-    img_c, info_c = run(pipe, cond_pil, "C_trained_bf16vae_scale0", 0.0)
+    img_c, info_c = run(pipe, cond_pil, "C_trained_bf16vae_scale0", 0.0, args.out_dir)
     del pipe
     torch.cuda.empty_cache()
 
@@ -270,7 +270,7 @@ def main():
     print("\n===== TEST D: trained CN + fp32 VAE, cn_scale=1 =====")
     pipe = build_pipeline(args.pretrained_dir, args.controlnet_dir,
                           use_trained_cn=True, fp32_vae=True)
-    img_d, info_d = run(pipe, cond_pil, "D_trained_fp32vae_scale1", 1.0)
+    img_d, info_d = run(pipe, cond_pil, "D_trained_fp32vae_scale1", 1.0, args.out_dir)
     del pipe
     torch.cuda.empty_cache()
 
