@@ -22,6 +22,7 @@ import random
 import shutil
 import time
 from contextlib import nullcontext
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -86,6 +87,79 @@ def _import_text_encoder_class(pretrained_path: str, revision: str, subfolder: s
     raise ValueError(f"Unsupported text encoder architecture '{arch}' in {pretrained_path}/{subfolder}")
 
 
+# ---------------------------------------------------------------------------
+# Validation metrics (PSNR / SSIM)
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def _pil_to_tensor_01(img: Image.Image) -> torch.Tensor:
+    """Convert a PIL image to a float tensor in [0, 1] on CPU, shape [3, H, W]."""
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    arr = np.asarray(img, dtype=np.float32) / 255.0  # [H, W, 3]
+    return torch.from_numpy(arr).permute(2, 0, 1).contiguous()
+
+
+def _calc_psnr(pred: torch.Tensor, target: torch.Tensor) -> float:
+    """PSNR (dB) between two [0, 1] tensors of identical shape."""
+    mse = float(((pred - target) ** 2).mean().item())
+    if mse <= 1e-12:
+        return 100.0
+    return 10.0 * math.log10(1.0 / mse)
+
+
+def _calc_ssim(pred: torch.Tensor, target: torch.Tensor, window_size: int = 11) -> float:
+    """Simplified SSIM (box-filter approximation). Returns a float in [-1, 1].
+
+    Both inputs are expected to be float tensors in [0, 1] with identical shape
+    [3, H, W] (or [1, H, W]). Channels are averaged before the SSIM computation.
+    """
+    if pred.ndim == 3:
+        pred = pred.mean(dim=0, keepdim=True)
+        target = target.mean(dim=0, keepdim=True)
+    c1 = 0.01 ** 2
+    c2 = 0.03 ** 2
+    pad = window_size // 2
+    mu_p = F.avg_pool2d(pred, window_size, stride=1, padding=pad)
+    mu_t = F.avg_pool2d(target, window_size, stride=1, padding=pad)
+    mu_p_sq = mu_p * mu_p
+    mu_t_sq = mu_t * mu_t
+    mu_pt = mu_p * mu_t
+    sigma_p_sq = F.avg_pool2d(pred * pred, window_size, stride=1, padding=pad) - mu_p_sq
+    sigma_t_sq = F.avg_pool2d(target * target, window_size, stride=1, padding=pad) - mu_t_sq
+    sigma_pt = F.avg_pool2d(pred * target, window_size, stride=1, padding=pad) - mu_pt
+    num = (2.0 * mu_pt + c1) * (2.0 * sigma_pt + c2)
+    den = (mu_p_sq + mu_t_sq + c1) * (sigma_p_sq + sigma_t_sq + c2)
+    ssim_map = num / den.clamp_min(1e-12)
+    return float(ssim_map.mean().item())
+
+
+def _maybe_load_gt(lq_path: Path, dataset_root: Path) -> Optional[Image.Image]:
+    """Try to load the GT image paired with the given LQ image.
+
+    Expects ``<root>/<weather>/<split>/LQ/<stem>.<ext>``; looks for the matching
+    ``<root>/<weather>/<split>/GT/<stem>.<ext>``.  Returns ``None`` if either
+    the path layout does not match or the GT file is missing.
+    """
+    try:
+        rel = lq_path.relative_to(dataset_root)
+    except ValueError:
+        return None
+    parts = rel.parts
+    if len(parts) < 4:
+        return None
+    if parts[-2] != "LQ":
+        return None
+    weather, split = parts[0], parts[1]
+    gt_path = dataset_root / weather / split / "GT" / lq_path.name
+    if not gt_path.is_file():
+        return None
+    try:
+        return Image.open(gt_path).convert("RGB")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _seed_everything(seed: Optional[int]) -> None:
     if seed is None:
         return
@@ -111,16 +185,20 @@ def _collate_fn(examples: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _resolve_validation_inputs(args) -> tuple[Optional[List[str]], Optional[List[str]]]:
+def _resolve_validation_inputs(args) -> tuple[Optional[List[str]], Optional[List[str]], Optional[List[str]]]:
     """Pick validation images/prompts.
 
     Validation images are auto-discovered from each weather's ``<dataset_root>/<weather>/test/LQ``
     folder. ``num_validation_images`` controls how many test images to take *per weather type*
     (so total = ``num_validation_images * len(weather_types)``). When ``validation_image`` is set
     in the YAML it acts as a manual override (paths or single path).
+
+    Returns:
+        (val_imgs, val_prompts, val_weathers).  ``val_weathers`` is the weather name for each
+        LQ path (``"manual"`` when the user provided paths explicitly).
     """
     if not args.run_validation:
-        return None, None
+        return None, None, None
 
     val_prompts = args.validation_prompt
     if isinstance(val_prompts, str):
@@ -135,6 +213,7 @@ def _resolve_validation_inputs(args) -> tuple[Optional[List[str]], Optional[List
         root = Path(args.dataset_root)
         per_weather = max(1, int(args.num_validation_images))
         resolved: List[str] = []
+        resolved_weathers: List[str] = []
         for weather in args.weather_types:
             test_lq = root / weather / "test" / "LQ"
             if not test_lq.is_dir():
@@ -150,22 +229,26 @@ def _resolve_validation_inputs(args) -> tuple[Optional[List[str]], Optional[List
             selected = pngs[:per_weather]
             print(f"[验证] {weather}: 选 {len(selected)} 张 (per_weather={per_weather})")
             resolved.extend(str(p) for p in selected)
+            resolved_weathers.extend([weather] * len(selected))
         if not resolved:
             print("[验证] 未在任意天气的 test/LQ 找到图片, 跳过本轮验证。")
-            return None, None
+            return None, None, None
         val_imgs = resolved
+        val_weathers = resolved_weathers
     else:
         val_imgs = list(val_imgs_cfg)
+        val_weathers = ["manual"] * len(val_imgs)
 
     if len(val_imgs) == 1 and len(val_prompts) > 1:
         val_imgs = val_imgs * len(val_prompts)
+        val_weathers = val_weathers * len(val_prompts)
     elif len(val_prompts) == 1 and len(val_imgs) > 1:
         val_prompts = val_prompts * len(val_imgs)
     elif len(val_imgs) != len(val_prompts):
         raise ValueError(
             f"validation_image ({len(val_imgs)}) 与 validation_prompt ({len(val_prompts)}) 数量不一致"
         )
-    return val_imgs, val_prompts
+    return val_imgs, val_prompts, val_weathers
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +269,7 @@ def _log_validation(
     step: int,
     is_final_validation: bool = False,
 ) -> None:
-    val_imgs, val_prompts = _resolve_validation_inputs(args)
+    val_imgs, val_prompts, val_weathers = _resolve_validation_inputs(args)
     if not val_imgs:
         return
 
@@ -246,7 +329,12 @@ def _log_validation(
     if args.seed is not None:
         generator = torch.Generator(device=accelerator.device).manual_seed(int(args.seed))
 
-    image_logs = []
+    # 保存目录: <output>/validation/<timestamp>_step<step>/<weather>/
+    # 与 controlnet_file run_epoch_validation 保持一致
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = Path(args.output_dir) / "validation" / f"{timestamp}_step{step:06d}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     autocast_ctx = nullcontext() if is_final_validation else torch.autocast(accelerator.device.type)
 
     from torchvision import transforms as _tv
@@ -254,47 +342,150 @@ def _log_validation(
     resize = _tv.Resize(args.resolution, interpolation=_interp)
     center_crop = _tv.CenterCrop(args.resolution)
 
-    for val_prompt, val_image in zip(val_prompts, val_imgs):
-        cond = Image.open(val_image).convert("RGB")
-        cond = center_crop(resize(cond))
-        images = []
-        for _ in range(args.num_validation_images):
-            with autocast_ctx:
-                image = pipeline(
-                    prompt=val_prompt,
-                    image=cond,
-                    num_inference_steps=args.validation_inference_steps,
-                    guidance_scale=args.validation_guidance_scale,
-                    negative_prompt=args.validation_negative_prompt,
-                    generator=generator,
-                ).images[0]
-            images.append(image)
-        image_logs.append(
-            {"validation_image": cond, "images": images, "validation_prompt": val_prompt}
-        )
+    dataset_root = Path(args.dataset_root)
+    weather_metric_lists: Dict[str, Dict[str, List[float]]] = {
+        w: {"psnr": [], "ssim": []} for w in set(val_weathers)
+    }
+    gt_count = 0
+    image_logs_for_tracker: List[Dict[str, Any]] = []
 
-    out_dir = Path(args.output_dir) / "validation" / f"step-{step:06d}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for log in image_logs:
-        prompt_str = (log["validation_prompt"] or "<empty>").replace(" ", "_")[:40]
-        panel = [log["validation_image"]] + log["images"]
-        grid = make_image_grid(panel, rows=1, cols=len(panel))
-        grid.save(out_dir / f"{Path(val_imgs[0]).stem}_{prompt_str}.png")
+    # 按 weather 分组, 每个 weather 单独建子文件夹 (与 controlnet_file 一致)
+    weather_to_entries: Dict[str, List[tuple]] = {}
+    for vp, vi, vw in zip(val_prompts, val_imgs, val_weathers):
+        weather_to_entries.setdefault(vw, []).append((vp, vi))
+
+    for weather, entries in weather_to_entries.items():
+        weather_dir = out_dir / weather
+        weather_dir.mkdir(parents=True, exist_ok=True)
+
+        for sample_idx, (val_prompt, val_image) in enumerate(entries):
+            cond = Image.open(val_image).convert("RGB")
+            cond = center_crop(resize(cond))
+            stem = Path(val_image).stem
+
+            # GT 自动发现
+            gt_pil = _maybe_load_gt(Path(val_image), dataset_root)
+            if gt_pil is not None:
+                gt_pil = center_crop(resize(gt_pil))
+
+            # LQ 每张只保存一次
+            cond.save(weather_dir / f"{sample_idx:03d}_{stem}_lq.png")
+            # GT 每张只保存一次 (如有)
+            if gt_pil is not None:
+                gt_pil.save(weather_dir / f"{sample_idx:03d}_{stem}_gt.png")
+
+            # 生成 num_validation_images 张 pred, 各自单独保存
+            images: List[Image.Image] = []
+            for sample_n in range(args.num_validation_images):
+                with autocast_ctx:
+                    image = pipeline(
+                        prompt=val_prompt,
+                        image=cond,
+                        num_inference_steps=args.validation_inference_steps,
+                        guidance_scale=args.validation_guidance_scale,
+                        negative_prompt=args.validation_negative_prompt,
+                        generator=generator,
+                    ).images[0]
+                images.append(image)
+
+                if args.num_validation_images > 1:
+                    pred_name = f"{sample_idx:03d}_{stem}_sample{sample_n:02d}_pred.png"
+                else:
+                    pred_name = f"{sample_idx:03d}_{stem}_pred.png"
+                image.save(weather_dir / pred_name)
+
+                if gt_pil is not None:
+                    pred_t = _pil_to_tensor_01(image)
+                    gt_t = _pil_to_tensor_01(gt_pil)
+                    weather_metric_lists[weather]["psnr"].append(_calc_psnr(pred_t, gt_t))
+                    weather_metric_lists[weather]["ssim"].append(_calc_ssim(pred_t, gt_t))
+                    gt_count += 1
+
+            image_logs_for_tracker.append({
+                "weather": weather,
+                "stem": stem,
+                "validation_image": cond,
+                "images": images,
+                "gt_pil": gt_pil,
+            })
+
+    # ===== Aggregate + console + tensorboard/wandb metrics =====
+    metric_records: List[Dict[str, float]] = []
+    for w, m in weather_metric_lists.items():
+        for psnr_v, ssim_v in zip(m["psnr"], m["ssim"]):
+            metric_records.append({"weather": w, "psnr": psnr_v, "ssim": ssim_v})
+
+    if metric_records:
+        avg_psnr = sum(r["psnr"] for r in metric_records) / len(metric_records)
+        avg_ssim = sum(r["ssim"] for r in metric_records) / len(metric_records)
+        print(f"\n[验证 step {step}] 指标汇总 (n={len(metric_records)}, GT matched={gt_count}):")
+        print(f"  PSNR = {avg_psnr:.3f} dB   SSIM = {avg_ssim:.4f}")
+        for w in sorted(weather_metric_lists):
+            psnrs = weather_metric_lists[w]["psnr"]
+            ssims = weather_metric_lists[w]["ssim"]
+            if psnrs:
+                print(
+                    f"  [{w}] PSNR = {sum(psnrs) / len(psnrs):.3f} dB   "
+                    f"SSIM = {sum(ssims) / len(ssims):.4f}   (n={len(psnrs)})"
+                )
+
+        log_dict = {"val/psnr": avg_psnr, "val/ssim": avg_ssim, "val/gt_matched": gt_count}
+        for w, m in weather_metric_lists.items():
+            if m["psnr"]:
+                log_dict[f"val/{w}/psnr"] = sum(m["psnr"]) / len(m["psnr"])
+                log_dict[f"val/{w}/ssim"] = sum(m["ssim"]) / len(m["ssim"])
+        accelerator.log(log_dict, step=step)
+    else:
+        print(f"\n[验证 step {step}] 跳过指标: 未找到任何 GT 图 (检查 <dataset_root>/<weather>/<split>/GT/<name>)")
+
+    # ===== 写 metrics.txt 汇总 (与 controlnet_file 一致) =====
+    summary_path = out_dir / "metrics.txt"
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write(f"Step: {step}\n")
+        f.write(f"Timestamp: {timestamp}\n")
+        f.write(f"Inference steps: {args.validation_inference_steps}\n")
+        f.write(f"Guidance scale: {args.validation_guidance_scale}\n")
+        f.write(f"Num samples per weather: {args.num_validation_images}\n\n")
+        f.write("Per-weather metrics:\n")
+        for w in sorted(weather_metric_lists):
+            psnrs = weather_metric_lists[w]["psnr"]
+            ssims = weather_metric_lists[w]["ssim"]
+            if psnrs:
+                f.write(
+                    f"  {w:8s}  PSNR={sum(psnrs) / len(psnrs):.3f} dB"
+                    f"  SSIM={sum(ssims) / len(ssims):.4f}  (n={len(psnrs)})\n"
+                )
+        if metric_records:
+            f.write(
+                f"\nAverage:        PSNR={avg_psnr:.3f} dB"
+                f"  SSIM={avg_ssim:.4f}  (n={len(metric_records)})\n"
+            )
 
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
-            for log in image_logs:
-                formatted = [np.asarray(log["validation_image"])] + [np.asarray(img) for img in log["images"]]
+            for log in image_logs_for_tracker:
+                formatted = [np.asarray(log["validation_image"])]
+                formatted += [np.asarray(img) for img in log["images"]]
+                if log["gt_pil"] is not None:
+                    formatted.append(np.asarray(log["gt_pil"]))
                 tracker.writer.add_images(
-                    log["validation_prompt"] or "validation",
+                    f"validation/{log['weather']}/{log['stem']}",
                     np.stack(formatted),
                     step,
                     dataformats="NHWC",
                 )
         elif tracker.name == "wandb":
-            wandb_images = [wandb.Image(log["validation_image"], caption="conditioning")]
-            wandb_images += [wandb.Image(img, caption=log["validation_prompt"]) for img in log["images"]]
-            tracker.log({"validation": wandb_images})
+            for log in image_logs_for_tracker:
+                wandb_images = [wandb.Image(log["validation_image"], caption=f"{log['weather']}|lq")]
+                wandb_images += [
+                    wandb.Image(img, caption=f"{log['weather']}|pred_{i}")
+                    for i, img in enumerate(log["images"])
+                ]
+                if log["gt_pil"] is not None:
+                    wandb_images.append(wandb.Image(log["gt_pil"], caption=f"{log['weather']}|gt"))
+                wandb.log({f"validation/{log['weather']}/{log['stem']}": wandb_images})
+
+    print(f"[验证 step {step}] 结果保存到: {out_dir}")
 
     del pipeline
     gc.collect()
