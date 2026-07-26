@@ -391,8 +391,8 @@ class PairedWeatherDataset(torch_data.Dataset):
         cond_pil = self.preprocess(cond_pil)
         t_resize = time.perf_counter() - t0
 
-        gt_t = self.to_tensor(gt_img)
-        cond_t = self.to_tensor(cond_pil)
+        gt_t = (self.to_tensor(gt_img) * 255).to(torch.uint8)
+        cond_t = (self.to_tensor(cond_pil) * 255).to(torch.uint8)
         return gt_t, cond_t, t_decode, t_cond, t_resize
 
     def build_cache(self, num_workers: int = 0, force: bool = False) -> None:
