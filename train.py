@@ -17,6 +17,7 @@ import os
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 import argparse
+import copy
 import gc
 import logging
 import math
@@ -945,11 +946,13 @@ def main() -> None:
                         and global_step % args.validation_steps == 0
                     ):
                         if val_pipeline is not None:
-                            # 注意: 不能对训练中的 controlnet 做 dtype cast (会原地把
-                            # fp32 可训练参数转成 bf16, 导致 optimizer.step() 时与
-                            # float32 的 Adam 状态 dtype 不匹配而崩溃)。
-                            # 验证在 _log_validation 内用 autocast, fp32 权重可直接推理。
-                            val_pipeline.controlnet = _unwrap(controlnet)
+                            # 深拷贝 state_dict 加载到统一 weight_dtype 的 controlnet,
+                            # 避免训练中的混合精度参数直接放入全 bf16 pipeline 产生 NaN
+                            src = _unwrap(controlnet)
+                            val_ctrl = ControlNetModel.from_config(src.config)
+                            val_ctrl.load_state_dict(copy.deepcopy(src.state_dict()))
+                            val_ctrl.to(device=accelerator.device, dtype=weight_dtype)
+                            val_pipeline.controlnet = val_ctrl
                         _log_validation(
                             pipeline=val_pipeline,
                             args=args,
