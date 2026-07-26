@@ -195,6 +195,8 @@ def _build_pipeline(args, device: torch.device, weight_dtype: torch.dtype) -> St
     print(f"[setup] attention backend: unet={used}, controlnet={used_cn}")
 
     pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
+    # 训练时 ControlNet 接收 [0,1]; 关闭 pipeline 默认的 [-1,1] 归一化
+    pipeline.control_image_processor.do_normalize = False
     if getattr(args, "enable_model_cpu_offload", False) and device.type == "cuda":
         pipeline.enable_model_cpu_offload()
     else:
