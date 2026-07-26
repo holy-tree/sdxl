@@ -240,6 +240,8 @@ def build_pipeline(
     pipeline = pipeline.to(DEVICE)
     pipeline.set_progress_bar_config(disable=True)
 
+    # 与 test.py / train.py 对齐: control 关闭 [-1,1] 归一化保持 [0,1]
+    pipeline.control_image_processor.do_normalize = False
     # 关键: bf16 latents + fp32 VAE 时, PyTorch 不会自动 cast, 必须显式 wrap
     if fp32_vae:
         _wrap_vae_decode_for_fp32(pipeline.vae)
@@ -289,6 +291,9 @@ def run(
         guidance_scale=GUIDANCE,
         height=resolution,
         width=resolution,
+        original_size=(resolution, resolution),
+        target_size=(resolution, resolution),
+        crops_coords_top_left=(0, 0),
         controlnet_conditioning_scale=controlnet_scale,
         generator=generator,
     ).images[0]
