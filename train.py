@@ -802,7 +802,7 @@ def main() -> None:
     if accelerator.is_main_process and args.run_validation and args.validation_steps > 0:
         vae_for_val = AutoencoderKL.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="vae",
-            torch_dtype=weight_dtype,
+            torch_dtype=torch.float32,
         )
         val_pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
             args.pretrained_model_name_or_path,

@@ -10,7 +10,7 @@
 pretrained_model_name_or_path: "stabilityai/stable-diffusion-xl-base-1.0"
 pretrained_vae_model_name_or_path: null
 controlnet_path: "./experiment/weather_controlnet"
-variant: "fp16"                   # null | fp16 | bf16
+variant: null                     # null | fp16 | bf16
 revision: null
 
 # ---------- 输入 / 输出 ----------
