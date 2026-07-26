@@ -119,6 +119,7 @@ class PairedWeatherDataset(torch_data.Dataset):
         weather_num_samples: Optional[Dict[str, int]] = None,
         interpolation: str = "bilinear",
         augment: bool = True,
+        preload: bool = False,
     ) -> None:
         super().__init__()
 
@@ -157,6 +158,19 @@ class PairedWeatherDataset(torch_data.Dataset):
         self.to_tensor = transforms.ToTensor()
         self.normalize = transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
         self.augment = bool(augment)
+        self._cache: Optional[List[Tuple[Image.Image, Image.Image]]] = None
+        if preload:
+            self._preload_to_memory()
+
+    def _preload_to_memory(self) -> None:
+        print(f"[数据集] preload: 预解码 {len(self.samples)} 张图像到内存 ...")
+        cache: List[Tuple[Image.Image, Image.Image]] = []
+        for i, sample in enumerate(self.samples):
+            gt = Image.open(sample.gt_path).convert("RGB")
+            lq = Image.open(sample.lq_path).convert("RGB")
+            cache.append((gt, lq))
+        self._cache = cache
+        print(f"[数据集] preload 完成, 占内存约 {len(cache) * 2 * self.resolution * self.resolution * 3 / 1e9:.2f} GB (按 resize 前估算)")
 
     def _discover(self) -> List[_ResolvedSample]:
         if not self.dataset_root.is_dir():
@@ -244,11 +258,14 @@ class PairedWeatherDataset(torch_data.Dataset):
 
     def __getitem__(self, index: int) -> Dict[str, object]:
         sample = self.samples[index]
-        try:
-            gt_img = Image.open(sample.gt_path).convert("RGB")
-            lq_img = Image.open(sample.lq_path).convert("RGB")
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Failed to load sample {sample}: {exc}") from exc
+        if self._cache is not None:
+            gt_img, lq_img = self._cache[index]
+        else:
+            try:
+                gt_img = Image.open(sample.gt_path).convert("RGB")
+                lq_img = Image.open(sample.lq_path).convert("RGB")
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"Failed to load sample {sample}: {exc}") from exc
 
         cond_pil = make_conditioning(lq_img, self.conditioning_type)
 

@@ -45,6 +45,7 @@ save_individual: true             # 单独保存恢复结果
 save_comparison: true             # 保存 LQ | Restored | GT 三联图
 
 # ---------- 加速 ----------
+attention_backend: "auto"
 enable_xformers_memory_efficient_attention: false
 enable_model_cpu_offload: false
 

@@ -126,9 +126,16 @@ class TrainConfig:
     lr_power: float = 1.0
 
     # ----- DataLoader -----
-    dataloader_num_workers: int = 2
+    dataloader_num_workers: int = 4
+    dataloader_prefetch_factor: int = 4
+    pin_memory: bool = True
+    pin_memory_device: Optional[str] = "cuda"   # "cuda" / "xpu" / None
+    persistent_workers: bool = True
+    non_blocking_transfer: bool = True
     image_interpolation_mode: str = "lanczos"
     augment: bool = True
+    channels_last: bool = True                  # NHWC layout for image tensors
+    preload_dataset: bool = False               # pre-decode all images to RAM (small datasets)
 
     # ----- SDXL specific -----
     crops_coords_top_left_h: int = 0
@@ -136,8 +143,11 @@ class TrainConfig:
 
     # ----- optimization flags -----
     enable_xformers_memory_efficient_attention: bool = False
+    attention_backend: str = "auto"             # auto | xformers | sdpa | math
     enable_npu_flash_attention: bool = False
     allow_tf32: bool = False
+    torch_compile: bool = False                 # torch.compile(unet/controlnet)
+    torch_compile_mode: str = "reduce-overhead" # default | reduce-overhead | max-autotune
 
     # ----- checkpointing -----
     checkpointing_steps: int = 500
@@ -248,6 +258,7 @@ class TestConfig:
 
     # ----- speed -----
     enable_xformers_memory_efficient_attention: bool = False
+    attention_backend: str = "auto"
     enable_model_cpu_offload: bool = False
 
     # ----- diagnostics -----

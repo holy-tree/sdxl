@@ -42,6 +42,7 @@ from diffusers.utils import make_image_grid
 
 from dataloaders import DEFAULT_WEATHER_PROMPTS, make_conditioning
 from schemas import TestConfig
+from utils.attention import enable_efficient_attention
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,13 @@ def _build_pipeline(args, device: torch.device, weight_dtype: torch.dtype) -> St
             pipeline.enable_xformers_memory_efficient_attention()
         except Exception as exc:  # noqa: BLE001
             print(f"[xformers] 启用失败: {exc}")
+
+    backend = args.attention_backend
+    if backend == "auto":
+        backend = "xformers" if args.enable_xformers_memory_efficient_attention else "auto"
+    used = enable_efficient_attention(pipeline.unet, backend=backend)
+    used_cn = enable_efficient_attention(pipeline.controlnet, backend=backend)
+    print(f"[setup] attention backend: unet={used}, controlnet={used_cn}")
 
     pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
     if getattr(args, "enable_model_cpu_offload", False) and device.type == "cuda":

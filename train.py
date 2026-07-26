@@ -59,6 +59,7 @@ from dataloaders import (
     build_precomputed_dataset,
 )
 from schemas import TrainConfig
+from utils.attention import enable_efficient_attention, move_optimistic
 
 logger = get_logger(__name__)
 if is_wandb_available():
@@ -444,12 +445,14 @@ def main() -> None:
 
     if args.enable_npu_flash_attention and is_torch_npu_available():
         unet.enable_npu_flash_attention()
-    if args.enable_xformers_memory_efficient_attention and is_xformers_available():
-        from diffusers.utils.import_utils import is_xformers_available as _ixf
 
-        if _ixf():
-            unet.enable_xformers_memory_efficient_attention()
-            controlnet.enable_xformers_memory_efficient_attention()
+    backend = args.attention_backend
+    if backend == "auto":
+        backend = "xformers" if args.enable_xformers_memory_efficient_attention else "auto"
+    used_unet = enable_efficient_attention(unet, backend=backend)
+    used_cn = enable_efficient_attention(controlnet, backend=backend)
+    if used_unet == "xformers" or used_cn == "xformers":
+        logger.info("xformers memory-efficient attention enabled")
     if args.gradient_checkpointing:
         controlnet.enable_gradient_checkpointing()
         unet.enable_gradient_checkpointing()
@@ -461,6 +464,8 @@ def main() -> None:
 
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
 
     if args.scale_lr:
         args.learning_rate = (
@@ -515,6 +520,7 @@ def main() -> None:
         weather_num_samples=args.weather_num_samples,
         interpolation=args.image_interpolation_mode,
         augment=args.augment,
+        preload=args.preload_dataset,
     )
 
     original_size = (args.resolution, args.resolution)
@@ -544,8 +550,11 @@ def main() -> None:
         collate_fn=_collate_fn,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
-        pin_memory=True,
-        persistent_workers=args.dataloader_num_workers > 0,
+        pin_memory=args.pin_memory,
+        pin_memory_device=args.pin_memory_device if args.pin_memory else None,
+        persistent_workers=args.persistent_workers and args.dataloader_num_workers > 0,
+        prefetch_factor=args.dataloader_prefetch_factor if args.dataloader_num_workers > 0 else None,
+        drop_last=True,
     )
 
     if args.max_train_steps == -1:
@@ -574,6 +583,21 @@ def main() -> None:
     controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         controlnet, optimizer, train_dataloader, lr_scheduler
     )
+
+    if args.channels_last:
+        try:
+            controlnet.to(memory_format=torch.channels_last)
+            logger.info("ControlNet cast to channels_last memory format")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("channels_last on ControlNet failed: %s", exc)
+
+    if args.torch_compile and hasattr(torch, "compile"):
+        try:
+            unet = torch.compile(unet, mode=args.torch_compile_mode, fullgraph=False)
+            controlnet = torch.compile(controlnet, mode=args.torch_compile_mode, fullgraph=False)
+            logger.info("torch.compile enabled (mode=%s)", args.torch_compile_mode)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("torch.compile failed: %s", exc)
 
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
@@ -625,17 +649,18 @@ def main() -> None:
 
     image_logs = None
     train_start = time.time()
+    non_blocking = bool(args.non_blocking_transfer) and torch.cuda.is_available()
     for epoch in range(first_epoch, args.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(controlnet):
                 if args.pretrained_vae_model_name_or_path is not None:
-                    pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
+                    pixel_values = batch["pixel_values"].to(dtype=weight_dtype, non_blocking=non_blocking)
                 else:
                     pixel_values = batch["pixel_values"]
                 latents = vae.encode(pixel_values).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
                 if args.pretrained_vae_model_name_or_path is None:
-                    latents = latents.to(weight_dtype)
+                    latents = latents.to(weight_dtype, non_blocking=non_blocking)
 
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
@@ -643,10 +668,10 @@ def main() -> None:
                     0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device
                 ).long()
                 noisy_latents = noise_scheduler.add_noise(latents.float(), noise.float(), timesteps).to(
-                    dtype=weight_dtype
+                    dtype=weight_dtype, non_blocking=non_blocking
                 )
 
-                controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
+                controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype, non_blocking=non_blocking)
                 down_res, mid_res = controlnet(
                     noisy_latents,
                     timesteps,
@@ -661,8 +686,10 @@ def main() -> None:
                     timesteps,
                     encoder_hidden_states=batch["prompt_ids"],
                     added_cond_kwargs=batch["unet_added_conditions"],
-                    down_block_additional_residuals=[s.to(dtype=weight_dtype) for s in down_res],
-                    mid_block_additional_residual=mid_res.to(dtype=weight_dtype),
+                    down_block_additional_residuals=[
+                        s.to(dtype=weight_dtype, non_blocking=non_blocking) for s in down_res
+                    ],
+                    mid_block_additional_residual=mid_res.to(dtype=weight_dtype, non_blocking=non_blocking),
                     return_dict=False,
                 )[0]
 
