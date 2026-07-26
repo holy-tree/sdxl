@@ -45,7 +45,7 @@ weather_prompts:
   frost: "frosted scene, icy texture, frozen edges, cold blue tone"
 
 # ---------- 训练超参数 ----------
-learning_rate: 5.0e-5
+learning_rate: 1.0e-5
 train_batch_size: 16
 gradient_accumulation_steps: 1
 num_train_epochs: 5

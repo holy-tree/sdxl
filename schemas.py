@@ -102,7 +102,7 @@ class TrainConfig:
     weather_prompts: Dict[str, str] = field(default_factory=dict)
 
     # ----- training -----
-    learning_rate: float = 5.0e-5
+    learning_rate: float = 1.0e-5
     train_batch_size: int = 1
     gradient_accumulation_steps: int = 4
     num_train_epochs: int = 5

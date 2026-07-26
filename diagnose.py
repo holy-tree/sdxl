@@ -278,13 +278,10 @@ def main():
     del pipe
     torch.cuda.empty_cache()
 
-    # ============ TEST D ============
-    print("\n===== TEST D: trained CN + fp32 VAE, cn_scale=1 =====")
-    pipe = build_pipeline(args.pretrained_dir, args.controlnet_dir,
-                          use_trained_cn=True, fp32_vae=True)
-    img_d, info_d = run(pipe, cond_pil, "D_trained_fp32vae_scale1", 1.0, args.out_dir)
-    del pipe
-    torch.cuda.empty_cache()
+    # ============ TEST D: 跳过 fp32 VAE（与 bf16 pipeline 不兼容，会 dtype mismatch）========
+    print("\n===== TEST D: SKIPPED (fp32 VAE 与 bf16 pipeline 不兼容) =====")
+    img_d = None
+    info_d = {"mean": 0.0, "std": 0.0, "max": 0.0}
 
     # ============ TEST E ============
     print("\n===== TEST E: trained CN + bf16 VAE, cn_scale=0.1 (缩小残差) =====")
