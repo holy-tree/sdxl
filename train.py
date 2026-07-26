@@ -272,14 +272,16 @@ def _log_validation(
         return
 
     if is_final_validation or pipeline is None:
-        controlnet = ControlNetModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
+        # 训练时 VAE 与 ControlNet 都是 fp32 (line 699, line 655),
+        # 验证也必须保持 fp32 否则 bf16 精度损失会让 decode 输出偏暗
+        controlnet = ControlNetModel.from_pretrained(args.output_dir, torch_dtype=torch.float32)
         if args.pretrained_vae_model_name_or_path is not None:
             vae = AutoencoderKL.from_pretrained(
-                args.pretrained_vae_model_name_or_path, torch_dtype=weight_dtype
+                args.pretrained_vae_model_name_or_path, torch_dtype=torch.float32
             )
         else:
             vae = AutoencoderKL.from_pretrained(
-                args.pretrained_model_name_or_path, subfolder="vae", torch_dtype=weight_dtype
+                args.pretrained_model_name_or_path, subfolder="vae", torch_dtype=torch.float32
             )
             unet = UNet2DConditionModel.from_pretrained(
                 args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant,
@@ -817,18 +819,18 @@ def main() -> None:
     # 构建一次推理 pipeline, 复用 (避免每 N 步重下载 text encoder)
     val_pipeline = None
     if accelerator.is_main_process and args.run_validation and args.validation_steps > 0:
+        # VAE/ControlNet 训练时为 fp32, UNet 为 bf16; 验证必须保持同样精度, 否则 bf16 decode 输出偏暗
         vae_for_val = AutoencoderKL.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="vae",
-            torch_dtype=weight_dtype,
+            torch_dtype=torch.float32,
         )
         val_pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
             args.pretrained_model_name_or_path,
             vae=vae_for_val,
             unet=unet,
-            controlnet=_unwrap(controlnet),
+            controlnet=_unwrap(controlnet).to(torch.float32),
             revision=args.revision,
             variant=args.variant,
-            torch_dtype=weight_dtype,
         )
         val_pipeline.scheduler = UniPCMultistepScheduler.from_config(val_pipeline.scheduler.config)
         val_pipeline = val_pipeline.to(accelerator.device)
@@ -970,12 +972,11 @@ def main() -> None:
                         and global_step % args.validation_steps == 0
                     ):
                         if val_pipeline is not None:
-                            # 深拷贝 state_dict 加载到统一 weight_dtype 的 controlnet,
-                            # 避免训练中的混合精度参数直接放入全 bf16 pipeline 产生 NaN
+                            # 训练时 ControlNet 是 fp32, 验证也必须保持 fp32 否则 bf16 残差有偏
                             src = _unwrap(controlnet)
                             val_ctrl = ControlNetModel.from_config(src.config)
                             val_ctrl.load_state_dict(copy.deepcopy(src.state_dict()))
-                            val_ctrl.to(device=accelerator.device, dtype=weight_dtype)
+                            val_ctrl.to(device=accelerator.device, dtype=torch.float32)
                             val_pipeline.controlnet = val_ctrl
                         _log_validation(
                             pipeline=val_pipeline,
