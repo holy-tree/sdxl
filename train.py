@@ -945,9 +945,11 @@ def main() -> None:
                         and global_step % args.validation_steps == 0
                     ):
                         if val_pipeline is not None:
-                            val_pipeline.controlnet = _unwrap(controlnet).to(
-                                device=accelerator.device, dtype=weight_dtype, non_blocking=True
-                            )
+                            # 注意: 不能对训练中的 controlnet 做 dtype cast (会原地把
+                            # fp32 可训练参数转成 bf16, 导致 optimizer.step() 时与
+                            # float32 的 Adam 状态 dtype 不匹配而崩溃)。
+                            # 验证在 _log_validation 内用 autocast, fp32 权重可直接推理。
+                            val_pipeline.controlnet = _unwrap(controlnet)
                         _log_validation(
                             pipeline=val_pipeline,
                             args=args,
