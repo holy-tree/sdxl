@@ -13,11 +13,13 @@ diffusers examples, but:
 
 from __future__ import annotations
 
+import os
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 import argparse
 import gc
 import logging
 import math
-import os
 import random
 import shutil
 import time
@@ -276,15 +278,14 @@ def _log_validation(
         controlnet = ControlNetModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
         if args.pretrained_vae_model_name_or_path is not None:
             vae = AutoencoderKL.from_pretrained(
-                args.pretrained_vae_model_name_or_path, torch_dtype=weight_dtype, local_files_only=True
+                args.pretrained_vae_model_name_or_path, torch_dtype=weight_dtype
             )
         else:
             vae = AutoencoderKL.from_pretrained(
-                args.pretrained_model_name_or_path, subfolder="vae", torch_dtype=weight_dtype, local_files_only=True
+                args.pretrained_model_name_or_path, subfolder="vae", torch_dtype=weight_dtype
             )
             unet = UNet2DConditionModel.from_pretrained(
                 args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant,
-                local_files_only=True,
             )
 
     pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
@@ -295,7 +296,6 @@ def _log_validation(
         revision=args.revision,
         variant=args.variant,
         torch_dtype=weight_dtype,
-        local_files_only=True,
     )
     if not is_final_validation:
         pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
