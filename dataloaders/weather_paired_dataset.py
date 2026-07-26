@@ -457,7 +457,6 @@ class PairedWeatherDataset(torch_data.Dataset):
         gt_u8, cond_u8 = self._augment_tensor(gt_u8, cond_u8, self.augment)
         gt_tensor = gt_u8.float().div_(255.0)
         cond_tensor = cond_u8.float().div_(255.0)
-        cond_tensor = self.normalize(cond_tensor)
         gt_tensor = self.normalize(gt_tensor)
 
         sample = self.samples[index]
