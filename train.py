@@ -287,9 +287,9 @@ def _log_validation(
         return
 
     if is_final_validation or pipeline is None:
-        # 训练时 VAE 与 ControlNet 都是 fp32 (line 699, line 655),
-        # 验证也必须保持 fp32 否则 bf16 精度损失会让 decode 输出偏暗
-        controlnet = ControlNetModel.from_pretrained(args.output_dir, torch_dtype=torch.float32)
+        # VAE 保持 fp32 (训练也是 fp32, 且 SDXL VAE 的 force_upcast 设计意图就是 fp32 decode)
+        # ControlNet 用 bf16 匹配训练时的 autocast 实际计算精度
+        controlnet = ControlNetModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
         if args.pretrained_vae_model_name_or_path is not None:
             vae = AutoencoderKL.from_pretrained(
                 args.pretrained_vae_model_name_or_path, torch_dtype=torch.float32
@@ -308,8 +308,12 @@ def _log_validation(
             controlnet=controlnet,
             revision=args.revision,
             variant=args.variant,
-            torch_dtype=weight_dtype,
         )
+        # 不传 torch_dtype, 让各组件保持 fp32 VAE / fp32 ControlNet / fp16 text_encoder / fp32 UNet
+        # 然后显式把 UNet/text_encoder 转 bf16 (匹配训练)
+        pipeline.unet.to(weight_dtype)
+        pipeline.text_encoder.to(weight_dtype)
+        pipeline.text_encoder_2.to(weight_dtype)
         pipeline = pipeline.to(accelerator.device)
         pipeline.set_progress_bar_config(disable=True)
         if args.enable_xformers_memory_efficient_attention and is_xformers_available():
@@ -834,7 +838,7 @@ def main() -> None:
     # 构建一次推理 pipeline, 复用 (避免每 N 步重下载 text encoder)
     val_pipeline = None
     if accelerator.is_main_process and args.run_validation and args.validation_steps > 0:
-        # VAE/ControlNet 训练时为 fp32, UNet 为 bf16; 验证必须保持同样精度, 否则 bf16 decode 输出偏暗
+        # VAE fp32 (force_upcast 设计), ControlNet bf16 (匹配训练 autocast 计算精度)
         vae_for_val = AutoencoderKL.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="vae",
             torch_dtype=torch.float32,
@@ -843,11 +847,14 @@ def main() -> None:
             args.pretrained_model_name_or_path,
             vae=vae_for_val,
             unet=unet,
-            controlnet=_unwrap(controlnet).to(torch.float32),
+            controlnet=_unwrap(controlnet).to(weight_dtype),
             revision=args.revision,
             variant=args.variant,
         )
         val_pipeline.scheduler = UniPCMultistepScheduler.from_config(val_pipeline.scheduler.config)
+        # text_encoder/text_encoder_2 默认 fp16, 需显式转 bf16 与 UNet/ControlNet 兼容
+        val_pipeline.text_encoder.to(weight_dtype)
+        val_pipeline.text_encoder_2.to(weight_dtype)
         val_pipeline = val_pipeline.to(accelerator.device)
         val_pipeline.set_progress_bar_config(disable=True)
         if args.enable_xformers_memory_efficient_attention and is_xformers_available():
@@ -987,11 +994,11 @@ def main() -> None:
                         and global_step % args.validation_steps == 0
                     ):
                         if val_pipeline is not None:
-                            # 训练时 ControlNet 是 fp32, 验证也必须保持 fp32 否则 bf16 残差有偏
+                            # bf16 匹配训练 autocast 实际计算精度; fp32 存权重但 autocast 后是 bf16 算
                             src = _unwrap(controlnet)
                             val_ctrl = ControlNetModel.from_config(src.config)
                             val_ctrl.load_state_dict(copy.deepcopy(src.state_dict()))
-                            val_ctrl.to(device=accelerator.device, dtype=torch.float32)
+                            val_ctrl.to(device=accelerator.device, dtype=weight_dtype)
                             val_pipeline.controlnet = val_ctrl
                         _log_validation(
                             pipeline=val_pipeline,

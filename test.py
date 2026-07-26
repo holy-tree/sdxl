@@ -166,18 +166,19 @@ def _build_pipeline(args, device: torch.device, weight_dtype: torch.dtype) -> St
     print(f"[load] pretrained = {args.pretrained_model_name_or_path}")
     print(f"[load] controlnet = {args.controlnet_path}")
 
-    # 训练时 VAE/ControlNet 是 fp32, UNet 是 bf16; 推理必须保持同样精度否则 bf16 decode 输出偏暗
-    controlnet = ControlNetModel.from_pretrained(args.controlnet_path, torch_dtype=torch.float32)
+    # VAE fp32 (force_upcast 设计); ControlNet bf16 (匹配训练 autocast 计算精度)
+    controlnet = ControlNetModel.from_pretrained(args.controlnet_path, torch_dtype=weight_dtype)
     pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
         controlnet=controlnet,
-        # 不传 torch_dtype, 让 VAE/UNet/text_encoder 各保留 from_pretrained 的默认 fp32
-        # UNet 在 autocast 里会自动用 bf16/fp16, 不会被强制降到更低精度
+        # 不传 torch_dtype, 让各组件保留 from_pretrained 默认 fp32
         variant=getattr(args, "variant", None),
         revision=getattr(args, "revision", None),
     )
-    # 显式把 UNet 放回 bf16 (匹配训练)
+    # UNet 默认 fp32, 显式转 bf16 (匹配训练); text_encoder 默认 fp16, 转 bf16 避免 dtype mismatch
     pipeline.unet.to(weight_dtype)
+    pipeline.text_encoder.to(weight_dtype)
+    pipeline.text_encoder_2.to(weight_dtype)
 
     for module in (pipeline.vae, pipeline.text_encoder, pipeline.text_encoder_2, pipeline.unet, pipeline.controlnet):
         module.requires_grad_(False)
