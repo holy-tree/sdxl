@@ -132,10 +132,19 @@ class TrainConfig:
     pin_memory_device: Optional[str] = "cuda"   # "cuda" / "xpu" / None
     persistent_workers: bool = True
     non_blocking_transfer: bool = True
-    image_interpolation_mode: str = "lanczos"
+    image_interpolation_mode: str = "bilinear"
     augment: bool = True
     channels_last: bool = True                  # NHWC layout for image tensors
     preload_dataset: bool = False               # pre-decode all images to RAM (small datasets)
+
+    # ----- Disk preprocessing cache (opt-in) -----
+    # 默认关闭 (与 controlnet_file/dataloaders/paired_dataset.py 一致, 靠 num_workers + SSD)
+    # 启动条件: 显式设置 cache_dir. 1024² 单张磁盘占用: .pt ≈ 3MB, PNG ≈ 1-3MB, JPEG q95 ≈ 0.3-1MB (推荐)
+    cache_dir: Optional[str] = None
+    cache_format: str = "jpg"                   # "jpg" (5x 节省, 推荐) | "pt" (无解码, 最小 CPU) | "png"
+    cache_jpeg_quality: int = 95                # 仅 jpg 生效, 90-97
+    force_rebuild_cache: bool = False
+    cache_num_workers: int = 0                  # 多进程构建缓存, 0=单进程
 
     # ----- SDXL specific -----
     crops_coords_top_left_h: int = 0

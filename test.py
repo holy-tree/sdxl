@@ -264,7 +264,8 @@ def main() -> None:
     base_prompt = args.prompt or ""
     negative_prompt = args.negative_prompt or ""
 
-    resize = transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.LANCZOS)
+    _interp_mode = getattr(transforms.InterpolationMode, args.image_interpolation_mode.upper(), transforms.InterpolationMode.BILINEAR)
+    resize = transforms.Resize(args.resolution, interpolation=_interp_mode)
     center_crop = transforms.CenterCrop(args.resolution)
     to_tensor = transforms.ToTensor()
 

@@ -233,7 +233,8 @@ def _log_validation(
     autocast_ctx = nullcontext() if is_final_validation else torch.autocast(accelerator.device.type)
 
     from torchvision import transforms as _tv
-    resize = _tv.Resize(args.resolution, interpolation=_tv.InterpolationMode.LANCZOS)
+    _interp = getattr(_tv.InterpolationMode, args.image_interpolation_mode.upper(), _tv.InterpolationMode.BILINEAR)
+    resize = _tv.Resize(args.resolution, interpolation=_interp)
     center_crop = _tv.CenterCrop(args.resolution)
 
     for val_prompt, val_image in zip(val_prompts, val_imgs):
@@ -521,6 +522,11 @@ def main() -> None:
         interpolation=args.image_interpolation_mode,
         augment=args.augment,
         preload=args.preload_dataset,
+        cache_dir=args.cache_dir,
+        cache_format=args.cache_format,
+        cache_jpeg_quality=args.cache_jpeg_quality,
+        force_rebuild_cache=args.force_rebuild_cache,
+        cache_num_workers=args.cache_num_workers,
     )
 
     original_size = (args.resolution, args.resolution)

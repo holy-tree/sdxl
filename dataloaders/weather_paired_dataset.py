@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -120,6 +121,11 @@ class PairedWeatherDataset(torch_data.Dataset):
         interpolation: str = "bilinear",
         augment: bool = True,
         preload: bool = False,
+        cache_dir: Optional[str] = None,
+        cache_format: str = "jpg",
+        cache_jpeg_quality: int = 95,
+        force_rebuild_cache: bool = False,
+        cache_num_workers: int = 0,
     ) -> None:
         super().__init__()
 
@@ -159,18 +165,44 @@ class PairedWeatherDataset(torch_data.Dataset):
         self.normalize = transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
         self.augment = bool(augment)
         self._cache: Optional[List[Tuple[Image.Image, Image.Image]]] = None
+        self._tensor_cache: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None
+
+        self.cache_dir: Optional[Path] = Path(cache_dir) if cache_dir else None
+        self.cache_format = cache_format
+        self.cache_jpeg_quality = int(cache_jpeg_quality)
+        if self.cache_dir is not None:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            tag = f"res{self.resolution}_{self.conditioning_type}_{self._interp.name.lower()}"
+            self.cache_subdir = self.cache_dir / tag
+            self.cache_subdir.mkdir(parents=True, exist_ok=True)
+            if force_rebuild_cache or not self._cache_complete():
+                self.build_cache(num_workers=cache_num_workers, force=force_rebuild_cache)
+            else:
+                print(f"[数据集] 磁盘缓存已存在: {self.cache_subdir} (跳过重建)")
+
         if preload:
             self._preload_to_memory()
 
     def _preload_to_memory(self) -> None:
+        if self._tensor_cache is not None:
+            return
+        if self.cache_dir is not None and self._cache_complete():
+            print(f"[数据集] preload: 从磁盘缓存加载 {len(self.samples)} 张 ...")
+            cache: List[Tuple[torch.Tensor, torch.Tensor]] = []
+            for i in range(len(self.samples)):
+                cache.append(self._load_cached(i))
+            self._tensor_cache = cache
+            return
         print(f"[数据集] preload: 预解码 {len(self.samples)} 张图像到内存 ...")
-        cache: List[Tuple[Image.Image, Image.Image]] = []
+        cache_list: List[Tuple[Image.Image, Image.Image]] = []
         for i, sample in enumerate(self.samples):
             gt = Image.open(sample.gt_path).convert("RGB")
+            gt.load()
             lq = Image.open(sample.lq_path).convert("RGB")
-            cache.append((gt, lq))
-        self._cache = cache
-        print(f"[数据集] preload 完成, 占内存约 {len(cache) * 2 * self.resolution * self.resolution * 3 / 1e9:.2f} GB (按 resize 前估算)")
+            lq.load()
+            cache_list.append((gt, lq))
+        self._cache = cache_list
+        print(f"[数据集] preload 完成")
 
     def _discover(self) -> List[_ResolvedSample]:
         if not self.dataset_root.is_dir():
@@ -256,27 +288,178 @@ class PairedWeatherDataset(torch_data.Dataset):
             imgs = [img.rotate(90 * k, expand=True) for img in imgs]
         return imgs
 
-    def __getitem__(self, index: int) -> Dict[str, object]:
+    @staticmethod
+    def _augment_tensor(gt: torch.Tensor, cond: torch.Tensor, augment: bool):
+        if not augment:
+            return gt, cond
+        if random.random() < 0.5:
+            gt = torch.flip(gt, dims=(-1,))
+            cond = torch.flip(cond, dims=(-1,))
+        k = random.randint(0, 3)
+        if k:
+            gt = torch.rot90(gt, k=k, dims=(-2, -1))
+            cond = torch.rot90(cond, k=k, dims=(-2, -1))
+        return gt, cond
+
+    def _cache_paths(self, index: int) -> Tuple[Path, Path, Optional[Path]]:
         sample = self.samples[index]
-        if self._cache is not None:
-            gt_img, lq_img = self._cache[index]
+        stem = f"{sample.weather}__{sample.gt_path.stem}"
+        ext = self.cache_format
+        gt_p = self.cache_subdir / f"{stem}__gt.{ext}"
+        lq_p = self.cache_subdir / f"{stem}__lq.{ext}"
+        cond_p = self.cache_subdir / f"{stem}__cond.{ext}" if self.conditioning_type != "lq" else None
+        return gt_p, lq_p, cond_p
+
+    def _cache_complete(self) -> bool:
+        if self.cache_dir is None:
+            return False
+        for i in range(len(self.samples)):
+            gt_p, lq_p, cond_p = self._cache_paths(i)
+            if not gt_p.is_file() or not lq_p.is_file():
+                return False
+            if cond_p is not None and not cond_p.is_file():
+                return False
+        return True
+
+    def _load_cached(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        gt_p, lq_p, cond_p = self._cache_paths(index)
+        gt = self._load_image_tensor(gt_p)
+        if cond_p is not None:
+            cond = self._load_image_tensor(cond_p)
         else:
-            try:
-                gt_img = Image.open(sample.gt_path).convert("RGB")
-                lq_img = Image.open(sample.lq_path).convert("RGB")
-            except Exception as exc:  # noqa: BLE001
-                raise RuntimeError(f"Failed to load sample {sample}: {exc}") from exc
+            cond = self._load_image_tensor(lq_p)
+        return gt, cond
 
+    def _load_image_tensor(self, path: Path) -> torch.Tensor:
+        if self.cache_format == "pt":
+            return torch.load(path, map_location="cpu")
+        with Image.open(path) as img:
+            img.load()
+        arr = np.array(img)
+        if arr.ndim == 2:
+            arr = np.stack([arr, arr, arr], axis=-1)
+        tensor = torch.from_numpy(arr).permute(2, 0, 1).contiguous()
+        return tensor
+
+    def _save_image_tensor(self, path: Path, tensor_u8: torch.Tensor) -> int:
+        """Save a uint8 [3,H,W] tensor to disk. Returns file size in bytes."""
+        if self.cache_format == "pt":
+            torch.save(tensor_u8.contiguous(), path)
+            return path.stat().st_size
+        arr = tensor_u8.permute(1, 2, 0).cpu().numpy()
+        img = Image.fromarray(arr, mode="RGB")
+        if self.cache_format in ("jpg", "jpeg"):
+            img.save(path, format="JPEG", quality=self.cache_jpeg_quality, optimize=False)
+        else:
+            img.save(path, format="PNG", optimize=False)
+        return path.stat().st_size
+
+    def _save_cached(
+        self,
+        index: int,
+        gt_tensor_u8: torch.Tensor,
+        cond_tensor_u8: torch.Tensor,
+        save_cond_separately: bool,
+    ) -> Tuple[int, int, int]:
+        gt_p, lq_p, cond_p = self._cache_paths(index)
+        gt_size = self._save_image_tensor(gt_p, gt_tensor_u8)
+        if save_cond_separately:
+            cond_size = self._save_image_tensor(cond_p, cond_tensor_u8)
+            lq_size = cond_size
+        else:
+            cond_size = self._save_image_tensor(lq_p, cond_tensor_u8)
+            lq_size = cond_size
+        return gt_size, lq_size, cond_size
+
+    def _process_one_to_tensor(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        sample = self.samples[index]
+        t0 = time.perf_counter()
+        with Image.open(sample.gt_path) as gt_img_raw:
+            gt_img = gt_img_raw.convert("RGB")
+            gt_img.load()
+        with Image.open(sample.lq_path) as lq_img_raw:
+            lq_img = lq_img_raw.convert("RGB")
+            lq_img.load()
+        t_decode = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         cond_pil = make_conditioning(lq_img, self.conditioning_type)
+        t_cond = time.perf_counter() - t0
 
+        t0 = time.perf_counter()
         gt_img = self.preprocess(gt_img)
         cond_pil = self.preprocess(cond_pil)
-        gt_img, cond_pil = self._augment(gt_img, cond_pil)
+        t_resize = time.perf_counter() - t0
 
-        gt_tensor = self.to_tensor(gt_img)
+        gt_t = self.to_tensor(gt_img)
+        cond_t = self.to_tensor(cond_pil)
+        return gt_t, cond_t, t_decode, t_cond, t_resize
+
+    def build_cache(self, num_workers: int = 0, force: bool = False) -> None:
+        if self.cache_dir is None:
+            raise RuntimeError("cache_dir is not set")
+        if self.cache_format not in ("pt", "jpg", "jpeg", "png"):
+            raise ValueError(f"cache_format must be pt|jpg|jpeg|png, got {self.cache_format!r}")
+        self.cache_subdir.mkdir(parents=True, exist_ok=True)
+        save_cond = self.conditioning_type != "lq"
+        n = len(self.samples)
+        if force:
+            for i in range(n):
+                gt_p, lq_p, cond_p = self._cache_paths(i)
+                for p in (gt_p, lq_p, cond_p):
+                    if p is not None and p.is_file():
+                        p.unlink()
+        t_total = time.perf_counter()
+        if num_workers and num_workers > 0:
+            from multiprocessing import get_context
+
+            ctx = get_context("spawn")
+            args_list = [(i,) for i in range(n)]
+            with ctx.Pool(processes=num_workers) as pool:
+                results = pool.starmap(self._process_one_to_tensor, args_list)
+        else:
+            results = [self._process_one_to_tensor(i) for i in range(n)]
+        decode_t = sum(r[2] for r in results)
+        cond_t = sum(r[3] for r in results)
+        resize_t = sum(r[4] for r in results)
+        total_bytes = 0
+        for i, (gt_t, cond_t_t, *_rest) in enumerate(results):
+            g, l, _c = self._save_cached(i, gt_t.to(torch.uint8), cond_t_t.to(torch.uint8), save_cond)
+            total_bytes += g + l
+        elapsed = time.perf_counter() - t_total
+        gb = total_bytes / 1024 ** 3
+        per_sample = total_bytes / max(n, 1) / 1024 ** 2
+        print(
+            f"[数据集] 磁盘缓存构建完成: {self.cache_subdir}\n"
+            f"  samples={n}  total={elapsed:.1f}s  "
+            f"avg/sample={elapsed/n*1000:.1f}ms\n"
+            f"  decode={decode_t:.1f}s  conditioning={cond_t:.1f}s  resize={resize_t:.1f}s\n"
+            f"  format={self.cache_format}  total={gb:.2f} GB  "
+            f"per_sample={per_sample:.2f} MB"
+        )
+
+    def __getitem__(self, index: int) -> Dict[str, object]:
+        if self._tensor_cache is not None:
+            gt_u8, cond_u8 = self._tensor_cache[index]
+        elif self.cache_dir is not None and self._cache_complete():
+            gt_u8, cond_u8 = self._load_cached(index)
+        elif self._cache is not None:
+            gt_img, lq_img = self._cache[index]
+            cond_pil = make_conditioning(lq_img, self.conditioning_type)
+            gt_img = self.preprocess(gt_img)
+            cond_pil = self.preprocess(cond_pil)
+            gt_img, cond_pil = self._augment(gt_img, cond_pil)
+            gt_u8 = (self.to_tensor(gt_img) * 255).to(torch.uint8)
+            cond_u8 = (self.to_tensor(cond_pil) * 255).to(torch.uint8)
+        else:
+            gt_u8, cond_u8, *_ = self._process_one_to_tensor(index)
+
+        gt_u8, cond_u8 = self._augment_tensor(gt_u8, cond_u8, self.augment)
+        gt_tensor = gt_u8.float().div_(255.0)
+        cond_tensor = cond_u8.float().div_(255.0)
         gt_tensor = self.normalize(gt_tensor)
-        cond_tensor = self.to_tensor(cond_pil)
 
+        sample = self.samples[index]
         prompt = self._make_prompt(sample.weather)
         if random.random() < self.null_text_ratio:
             prompt = ""

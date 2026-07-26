@@ -69,16 +69,27 @@ lr_num_cycles: 0.5
 lr_power: 1.0
 
 # ---------- DataLoader ----------
-dataloader_num_workers: 8
+dataloader_num_workers: 4
 dataloader_prefetch_factor: 4
 pin_memory: true
 pin_memory_device: "cuda"        # null | "cuda" | "xpu"
 persistent_workers: true
 non_blocking_transfer: true
-image_interpolation_mode: "lanczos"
+image_interpolation_mode: "bilinear"   # bilinear (推荐, 接近 controlnet_file 速度) | bicubic | lanczos (质量更好但慢)
 augment: true
 channels_last: true             # image tensor NHWC layout
 preload_dataset: false          # true 时把所有图像预解码到内存 (小数据集)
+
+# ---------- 磁盘预处理缓存 (opt-in) ----------
+# 默认关闭 (与 controlnet_file/dataloaders/paired_dataset.py 一致, 靠 num_workers + SSD)
+# 开启后首次运行: open + resize + center_crop + (canny/gray) 跑一遍, 存到 cache_dir
+# 后续 epoch: 直接读缓存, 跳过 PIL/decode/resize/canny, 单 sample 几 ms
+# 1024² 单张磁盘占用: .pt ≈ 3MB, PNG ≈ 1-3MB, JPEG q95 ≈ 0.3-1MB (推荐)
+cache_dir: null                          # 留空 = 不缓存 (默认)
+cache_format: "jpg"                     # "jpg" (5x 节省) | "pt" (无解码) | "png"
+cache_jpeg_quality: 95                  # 仅 jpg 生效, 90-97 之间
+force_rebuild_cache: false
+cache_num_workers: 0                     # 0=单进程; >0 启用多进程构建
 
 # ---------- SDXL crop coordinates ----------
 crops_coords_top_left_h: 0
