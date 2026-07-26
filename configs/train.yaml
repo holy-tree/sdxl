@@ -17,7 +17,7 @@ controlnet_model_name_or_path: null
 revision: null                    # 模型仓库版本 (branch/tag/sha)
 variant: null                     # 模型权重变体 (如 "fp16" / "bf16")
 output_dir: "/root/autodl-tmp/sdxl/experiment/weather_controlnet"
-resume_from_checkpoint: "checkpoint-16000"
+resume_from_checkpoint: "checkpoint-18000"
 
 # ---------- 数据 ----------
 dataset_root: "/root/autodl-tmp/datasets"
@@ -72,7 +72,7 @@ lr_num_cycles: 0.5
 lr_power: 1.0
 
 # ---------- DataLoader ----------
-dataloader_num_workers: 4
+dataloader_num_workers: 8
 dataloader_prefetch_factor: 4
 pin_memory: true
 pin_memory_device: "cuda"        # null | "cuda" | "xpu"
@@ -110,7 +110,7 @@ torch_compile_mode: "reduce-overhead"
 
 # ---------- Checkpointing ----------
 checkpointing_steps: 1000
-checkpoints_total_limit: 4
+checkpoints_total_limit: 3
 
 # ---------- 日志 ----------
 logging_dir: "logs"
