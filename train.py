@@ -103,6 +103,21 @@ def _pil_to_tensor_01(img: Image.Image) -> torch.Tensor:
     return torch.from_numpy(arr).permute(2, 0, 1).contiguous()
 
 
+def _wrap_vae_decode_for_fp32(vae):
+    """Wrap vae.decode so that bf16 latents are cast to vae.dtype before decoding.
+
+    训练时 VAE 是 fp32 (line 699), 推理时若把 VAE 维持在 fp32 而 UNet 仍 bf16,
+    scheduler 输出的 latents 是 bf16, 直接 decode 会触发:
+        RuntimeError: Input type (c10::BFloat16) and bias type (float) should be the same
+    """
+    original_decode = vae.decode
+    def _wrapped(latents, *args, **kwargs):
+        if latents.dtype != vae.dtype:
+            latents = latents.to(vae.dtype)
+        return original_decode(latents, *args, **kwargs)
+    vae.decode = _wrapped
+
+
 def _calc_psnr(pred: torch.Tensor, target: torch.Tensor) -> float:
     """PSNR (dB) between two [0, 1] tensors of identical shape."""
     mse = float(((pred - target) ** 2).mean().item())
@@ -307,6 +322,9 @@ def _log_validation(
     # pipeline 默认 VaeImageProcessor / control_image_processor 会将 PIL 归一化到 [-1,1]
     # 此分布偏移导致验证图片偏红, 故关闭 normalize
     pipeline.control_image_processor.do_normalize = False
+    # bf16 latents + fp32 VAE 时 PyTorch 不会自动 cast, 必须显式 wrap 避免 dtype mismatch
+    if pipeline.vae.dtype != weight_dtype:
+        _wrap_vae_decode_for_fp32(pipeline.vae)
 
     generator = None
     if args.seed is not None:
@@ -318,11 +336,8 @@ def _log_validation(
     out_dir = Path(args.output_dir) / "validation" / f"{timestamp}_step{step:06d}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    autocast_ctx = (
-    nullcontext()
-    if is_final_validation
-    else torch.autocast(accelerator.device.type, dtype=weight_dtype)
-)
+    autocast_ctx = nullcontext()  # 不要 autocast: 否则 VAE fp32 decode 也会被压成 bf16 → 输出偏暗
+# 每个模块按自身 dtype 计算: UNet=bf16, VAE=fp32, ControlNet=fp32, text_encoder=bf16
 
     from torchvision import transforms as _tv
     _interp = getattr(_tv.InterpolationMode, args.image_interpolation_mode.upper(), _tv.InterpolationMode.BILINEAR)

@@ -201,12 +201,26 @@ def _build_pipeline(args, device: torch.device, weight_dtype: torch.dtype) -> St
     pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
     # 训练时 ControlNet 接收 [0,1]; 关闭 pipeline 默认的 [-1,1] 归一化
     pipeline.control_image_processor.do_normalize = False
+    # bf16 latents + fp32 VAE 时 PyTorch 不会自动 cast, 必须显式 wrap 避免 dtype mismatch
+    # 训练时 VAE 是 fp32, 推理保持 fp32 decode 才能避免精度损失导致输出偏暗
+    if pipeline.vae.dtype != weight_dtype:
+        _wrap_vae_decode_for_fp32(pipeline.vae)
     if getattr(args, "enable_model_cpu_offload", False) and device.type == "cuda":
         pipeline.enable_model_cpu_offload()
     else:
         pipeline = pipeline.to(device)
     pipeline.set_progress_bar_config(disable=True)
     return pipeline
+
+
+def _wrap_vae_decode_for_fp32(vae):
+    """Wrap vae.decode so that bf16 latents are cast to vae.dtype before decoding."""
+    original_decode = vae.decode
+    def _wrapped(latents, *args, **kwargs):
+        if latents.dtype != vae.dtype:
+            latents = latents.to(vae.dtype)
+        return original_decode(latents, *args, **kwargs)
+    vae.decode = _wrapped
 
 
 def parse_args() -> argparse.Namespace:
@@ -300,12 +314,9 @@ def main() -> None:
             if args.seed is not None:
                 generator = torch.Generator(device=device).manual_seed(int(args.seed) + sample_idx)
             t0 = time.time()
-            autocast_ctx = (
-                torch.autocast("cuda", dtype=weight_dtype)
-                if device.type == "cuda" and weight_dtype in (torch.float16, torch.bfloat16)
-                else torch.no_grad()
-            )
-            with torch.no_grad() if autocast_ctx is None else autocast_ctx:  # type: ignore[arg-type]
+            # 不要用 autocast(weight_dtype): 即使 VAE/ControlNet 已加载成 fp32,
+            # autocast 仍会把所有 op 强制降到 bf16, 导致 VAE decode 数值精度损失 → 输出偏暗
+            with torch.no_grad():
                 pred = pipeline(
                     prompt=prompt,
                     negative_prompt=negative_prompt,
