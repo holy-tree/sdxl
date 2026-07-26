@@ -118,6 +118,7 @@ class TrainConfig:
     max_grad_norm: float = 1.0
     set_grads_to_none: bool = True
     scale_lr: bool = False
+    l1_weight: float = 0.0              # L1 损失权重 (与 MSE 加权求和), 0 = 关闭, 常用 0.1~1.0
 
     # ----- LR scheduler -----
     lr_scheduler: str = "cosine"

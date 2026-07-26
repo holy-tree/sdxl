@@ -918,6 +918,8 @@ def main() -> None:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
                 loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                if getattr(args, "l1_weight", 0.0) > 0:
+                    loss = loss + args.l1_weight * F.l1_loss(model_pred.float(), target.float(), reduction="mean")
 
                 if torch.isnan(loss).any().item() or torch.isinf(loss).any().item():
                     logger.warning(f"step {global_step}: loss is NaN/Inf, skipping")

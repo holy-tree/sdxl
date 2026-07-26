@@ -61,6 +61,7 @@ adam_epsilon: 1.0e-08
 max_grad_norm: 1.0
 set_grads_to_none: true
 scale_lr: false
+l1_weight: 0.5
 
 # ---------- 学习率调度 ----------
 lr_scheduler: "cosine"
@@ -99,7 +100,7 @@ crops_coords_top_left_w: 0
 #   attention_backend: "auto" → xformers (启用时) → SDPA flash → SDPA mem-eff → math
 #                    "xformers" 仅用 xformers; "sdpa" 仅用 PyTorch 原生 SDP; "math" 关闭加速
 attention_backend: "auto"
-enable_xformers_memory_efficient_attention: false
+enable_xformers_memory_efficient_attention: true
 enable_npu_flash_attention: false
 allow_tf32: false
 torch_compile: false            # torch.compile(unet, controlnet) — 首次启动慢
