@@ -301,6 +301,11 @@ def _log_validation(
             except Exception as exc:  # noqa: BLE001
                 print(f"[验证] xformers 启用失败: {exc}")
 
+    # 训练时 ControlNet 接收的 conditioning 是 [0,1] 范围 (dataset 只 div(255) 不做 normalize)
+    # pipeline 默认 VaeImageProcessor / control_image_processor 会将 PIL 归一化到 [-1,1]
+    # 此分布偏移导致验证图片偏红, 故关闭 normalize
+    pipeline.control_image_processor.do_normalize = False
+
     generator = None
     if args.seed is not None:
         generator = torch.Generator(device=accelerator.device).manual_seed(int(args.seed))

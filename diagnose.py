@@ -77,7 +77,7 @@ from transformers import (
 # ---------------------------------------------------------------------------
 # 默认超参数 (匹配 test.yaml)
 # ---------------------------------------------------------------------------
-RESOLUTION_INFER = 1024        # test.yaml 实际推理分辨率
+RESOLUTION_INFER = 512        # test.yaml 实际推理分辨率
 RESOLUTION_TRAIN = 512         # train.yaml 训练分辨率
 WEIGHT_DTYPE = torch.bfloat16
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
