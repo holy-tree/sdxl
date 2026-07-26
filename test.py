@@ -317,23 +317,45 @@ def main() -> None:
             times.append(dt)
 
             pred = _align_color(pred, lq_for_align, args.align_method)
-            pred_back = pred.resize(original_size, Image.BICUBIC)
             if args.print_color_stats:
                 _color_stats(pred, f"PRED(sample{sample_idx})")
 
+            # 直接保存 pipeline 原生输出分辨率 args.resolution (即 512×512),
+            # 不要 resize 回 original_size, 否则 BICUBIC 上采样会引入模糊
             if args.save_individual:
                 out_path = out_restored / f"{lq_path.stem}_sample{sample_idx:02d}.png"
-                pred_back.save(out_path)
-                print(f"  saved -> {out_path}  ({dt:.2f}s)")
+                pred.save(out_path)
+                print(f"  saved -> {out_path}  ({dt:.2f}s, size={pred.size})")
 
             if args.save_comparison:
-                panels: List[Image.Image] = [cond_pil, pred]
+                # 用 3 行 × 1 列布局, 总图接近正方形, 比 1×3 横条观感更好
                 if gt_pil is not None:
-                    panels.append(gt_pil)
-                grid = make_image_grid(panels, rows=1, cols=len(panels))
+                    panels: List[Image.Image] = [cond_pil, pred, gt_pil]
+                    rows, cols = 3, 1
+                    labels = ["LQ", "PRED", "GT"]
+                else:
+                    panels: List[Image.Image] = [cond_pil, pred]
+                    rows, cols = 2, 1
+                    labels = ["LQ", "PRED"]
+                grid = make_image_grid(panels, rows=rows, cols=cols)
+                # 拼一个竖向小标签条 (白色背景) 写 LQ/PRED/GT
+                from PIL import ImageDraw, ImageFont
+                w, h = panels[0].size
+                label_h = 32
+                grid_with_labels = Image.new("RGB", (w, rows * h + label_h * rows), "white")
+                draw = ImageDraw.Draw(grid_with_labels)
+                try:
+                    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+                except OSError:
+                    font = ImageFont.load_default()
+                for i, (panel, label) in enumerate(zip(panels, labels)):
+                    y_label = i * (h + label_h)
+                    draw.rectangle([0, y_label, w, y_label + label_h], fill="white")
+                    draw.text((10, y_label + 6), label, fill="black", font=font)
+                    grid_with_labels.paste(panel, box=(0, y_label + label_h))
                 cmp_path = out_compare / f"{lq_path.stem}_sample{sample_idx:02d}.png"
-                grid.save(cmp_path)
-                print(f"  compare -> {cmp_path}")
+                grid_with_labels.save(cmp_path)
+                print(f"  compare -> {cmp_path}  (size={grid_with_labels.size})")
 
     if times:
         print("=" * 60)
