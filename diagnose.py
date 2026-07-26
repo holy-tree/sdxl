@@ -43,12 +43,12 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # HF 离线环境 (必须在 import diffusers 之前)
 # ---------------------------------------------------------------------------
-DEFAULT_HF_CACHE = "./hf_cache"
+DEFAULT_HF_CACHE = "/root/autodl-tmp/hf_cache"
 DEFAULT_PRETRAINED_SNAPSHOT = None
-DEFAULT_CONTROLNET_DIR = "./experiment/weather_controlnet/controlnet"
-DEFAULT_COND_IMG = "./datasets/rain/test/LQ/000003.jpg"
-DEFAULT_GT_IMG = None
-DEFAULT_OUT_DIR = "./experiment/diagnose"
+DEFAULT_CONTROLNET_DIR = "/root/autodl-tmp/sdxl/experiment/weather_controlnet/checkpoint-11000/controlnet"
+DEFAULT_COND_IMG = "/root/autodl-tmp/datasets/rain/test/LQ/000003.jpg"
+DEFAULT_GT_IMG = "/root/autodl-tmp/datasets/rain/test/GT/000003.jpg"
+DEFAULT_OUT_DIR = "/root/autodl-tmp/sdxl/experiment/diagnose"
 
 HF_HOME = os.environ.get("HF_HOME", DEFAULT_HF_CACHE)
 os.environ.setdefault("HF_HOME", HF_HOME)

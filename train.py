@@ -360,10 +360,17 @@ def _log_validation(
                 gt_pil.save(weather_dir / f"{sample_idx:03d}_{stem}_gt.png")
 
             # 每张 LQ 生成 1 张 pred
+            # 必须显式传入 height/width/original_size/target_size = args.resolution
+            # 否则 pipeline 默认取 SDXL 原生 1024, 与训练 512×512 的 latent 空间(64×64)不匹配 → 色偏
             with autocast_ctx:
                 image = pipeline(
                     prompt=val_prompt,
                     image=cond,
+                    height=args.resolution,
+                    width=args.resolution,
+                    original_size=(args.resolution, args.resolution),
+                    target_size=(args.resolution, args.resolution),
+                    crops_coords_top_left=(args.crops_coords_top_left_h, args.crops_coords_top_left_w),
                     num_inference_steps=args.validation_inference_steps,
                     guidance_scale=args.validation_guidance_scale,
                     negative_prompt=args.validation_negative_prompt,
