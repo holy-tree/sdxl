@@ -259,9 +259,7 @@ def _resolve_validation_inputs(args) -> tuple[Optional[List[str]], Optional[List
 
 def _log_validation(
     *,
-    vae: Optional[AutoencoderKL],
-    unet: Optional[UNet2DConditionModel],
-    controlnet: Optional[ControlNetModel],
+    pipeline: Optional[StableDiffusionXLControlNetPipeline],
     args,
     accelerator: Accelerator,
     weight_dtype: torch.dtype,
@@ -272,9 +270,7 @@ def _log_validation(
     if not val_imgs:
         return
 
-    if not is_final_validation:
-        controlnet = accelerator.unwrap_model(controlnet)
-    else:
+    if is_final_validation or pipeline is None:
         controlnet = ControlNetModel.from_pretrained(args.output_dir, torch_dtype=weight_dtype)
         if args.pretrained_vae_model_name_or_path is not None:
             vae = AutoencoderKL.from_pretrained(
@@ -287,26 +283,22 @@ def _log_validation(
             unet = UNet2DConditionModel.from_pretrained(
                 args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant,
             )
-
-    pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
-        args.pretrained_model_name_or_path,
-        vae=vae,
-        unet=unet,
-        controlnet=controlnet,
-        revision=args.revision,
-        variant=args.variant,
-        torch_dtype=weight_dtype,
-    )
-    if not is_final_validation:
-        pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config)
-    pipeline = pipeline.to(accelerator.device)
-    pipeline.set_progress_bar_config(disable=True)
-
-    if args.enable_xformers_memory_efficient_attention and is_xformers_available():
-        try:
-            pipeline.enable_xformers_memory_efficient_attention()
-        except Exception as exc:  # noqa: BLE001
-            print(f"[验证] xformers 启用失败: {exc}")
+        pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
+            args.pretrained_model_name_or_path,
+            vae=vae,
+            unet=unet,
+            controlnet=controlnet,
+            revision=args.revision,
+            variant=args.variant,
+            torch_dtype=weight_dtype,
+        )
+        pipeline = pipeline.to(accelerator.device)
+        pipeline.set_progress_bar_config(disable=True)
+        if args.enable_xformers_memory_efficient_attention and is_xformers_available():
+            try:
+                pipeline.enable_xformers_memory_efficient_attention()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[验证] xformers 启用失败: {exc}")
 
     generator = None
     if args.seed is not None:
@@ -804,6 +796,31 @@ def main() -> None:
         tracker_cfg.pop("weather_prompts", None)
         accelerator.init_trackers(args.tracker_project_name, config=tracker_cfg)
 
+    # 构建一次推理 pipeline, 复用 (避免每 N 步重下载 text encoder)
+    val_pipeline = None
+    if accelerator.is_main_process and args.run_validation and args.validation_steps > 0:
+        vae_for_val = AutoencoderKL.from_pretrained(
+            args.pretrained_model_name_or_path, subfolder="vae",
+            torch_dtype=weight_dtype,
+        )
+        val_pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
+            args.pretrained_model_name_or_path,
+            vae=vae_for_val,
+            unet=unet,
+            controlnet=_unwrap(controlnet),
+            revision=args.revision,
+            variant=args.variant,
+            torch_dtype=weight_dtype,
+        )
+        val_pipeline.scheduler = UniPCMultistepScheduler.from_config(val_pipeline.scheduler.config)
+        val_pipeline = val_pipeline.to(accelerator.device)
+        val_pipeline.set_progress_bar_config(disable=True)
+        if args.enable_xformers_memory_efficient_attention and is_xformers_available():
+            try:
+                val_pipeline.enable_xformers_memory_efficient_attention()
+            except Exception:  # noqa: BLE001
+                pass
+
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(pre_dataset)}")
@@ -927,10 +944,12 @@ def main() -> None:
                         and args.validation_steps > 0
                         and global_step % args.validation_steps == 0
                     ):
+                        if val_pipeline is not None:
+                            val_pipeline.controlnet = _unwrap(controlnet).to(
+                                device=accelerator.device, dtype=weight_dtype, non_blocking=True
+                            )
                         _log_validation(
-                            vae=vae,
-                            unet=unet,
-                            controlnet=controlnet,
+                            pipeline=val_pipeline,
                             args=args,
                             accelerator=accelerator,
                             weight_dtype=weight_dtype,
@@ -950,9 +969,7 @@ def main() -> None:
         controlnet.save_pretrained(args.output_dir)
         if args.run_validation and args.validation_steps > 0:
             _log_validation(
-                vae=None,
-                unet=None,
-                controlnet=None,
+                pipeline=None,
                 args=args,
                 accelerator=accelerator,
                 weight_dtype=weight_dtype,
