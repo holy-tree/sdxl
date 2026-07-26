@@ -311,7 +311,11 @@ def _log_validation(
     out_dir = Path(args.output_dir) / "validation" / f"{timestamp}_step{step:06d}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    autocast_ctx = nullcontext() if is_final_validation else torch.autocast(accelerator.device.type)
+    autocast_ctx = (
+    nullcontext()
+    if is_final_validation
+    else torch.autocast(accelerator.device.type, dtype=weight_dtype)
+)
 
     from torchvision import transforms as _tv
     _interp = getattr(_tv.InterpolationMode, args.image_interpolation_mode.upper(), _tv.InterpolationMode.BILINEAR)
@@ -360,6 +364,17 @@ def _log_validation(
                     negative_prompt=args.validation_negative_prompt,
                     generator=generator,
                 ).images[0]
+
+                # ===== DEBUG: 检查验证输出 =====
+                if image is not None:
+                    _arr = np.asarray(image).astype(np.float32)
+                    if not np.isfinite(_arr).all():
+                        print(f"  ⚠ [验证 step {step}] {sample_idx:03d}_{stem}: image has NaN/Inf, shape={_arr.shape}")
+                        print(f"     CN dtype={val_pipeline.controlnet.dtype}, "
+                              f"VAE dtype={val_pipeline.vae.dtype}, "
+                              f"UNet dtype={val_pipeline.unet.dtype}")
+                else:
+                    print(f"  ⚠ [验证 step {step}] {sample_idx:03d}_{stem}: image is None")
             pred_name = f"{sample_idx:03d}_{stem}_pred.png"
             image.save(weather_dir / pred_name)
 
@@ -802,7 +817,7 @@ def main() -> None:
     if accelerator.is_main_process and args.run_validation and args.validation_steps > 0:
         vae_for_val = AutoencoderKL.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="vae",
-            torch_dtype=torch.float32,
+            torch_dtype=weight_dtype,
         )
         val_pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
             args.pretrained_model_name_or_path,
@@ -816,6 +831,14 @@ def main() -> None:
         val_pipeline.scheduler = UniPCMultistepScheduler.from_config(val_pipeline.scheduler.config)
         val_pipeline = val_pipeline.to(accelerator.device)
         val_pipeline.set_progress_bar_config(disable=True)
+        # ===== DEBUG: 打印 val_pipeline 各组件 dtype =====
+        print(f"\n[DEBUG val_pipeline dtypes]")
+        print(f"  vae        = {val_pipeline.vae.dtype}")
+        print(f"  unet       = {val_pipeline.unet.dtype}")
+        print(f"  controlnet = {val_pipeline.controlnet.dtype}")
+        print(f"  te1        = {val_pipeline.text_encoder.dtype}")
+        print(f"  te2        = {val_pipeline.text_encoder_2.dtype}")
+        print(f"  scheduler  = {val_pipeline.scheduler.__class__.__name__}")
         if args.enable_xformers_memory_efficient_attention and is_xformers_available():
             try:
                 val_pipeline.enable_xformers_memory_efficient_attention()
