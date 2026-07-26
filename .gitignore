@@ -1,0 +1,98 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+*.spec
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+profile_default/
+ipython_config.py
+
+# Testing / Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+.cache
+
+# Mypy / linters / formatters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+.black/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Logs / runtime artifacts
+logs/
+*.log
+*.log.*
+*.pid
+*.seed
+*.pid.lock
+nohup.out
+
+# Experiment / training outputs
+experiment/
+output/
+outputs/
+checkpoints/
+runs/
+wandb/
+mlruns/
+lightning_logs/
+.cache/
+
+# SDXL / diffusers caches & large artifacts
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Local config overrides
+.env
+.env.*
+config_local.yaml
+*.local.yaml
+
+# Build / packaging
+*.whl
+*.tar.gz
+*.zip
