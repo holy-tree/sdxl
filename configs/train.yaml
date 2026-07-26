@@ -119,11 +119,12 @@ hub_model_id: null
 
 # ---------- 验证 (in-training inference) ----------
 # 验证集从 <dataset_root>/<weather>/test/LQ 自动发现, 每个天气选 num_validation_images 张.
-#   例: num_validation_images=2, weather_types=[rain, snow, haze]  -> 每 500 步共 6 张验证图
+#   例: num_validation_images=2, weather_types=[rain, snow, haze]  -> 每 1000 步共 6 张验证图
+#   每张 LQ 生成 1 张 pred.
 # 如需手动指定, 把 validation_image 设为单路径或路径列表即可覆盖自动选择
 run_validation: true
 validation_steps: 1000
-num_validation_images: 3          # 每个天气验证时取的 LQ 数量
+num_validation_images: 3          # 每个天气验证时取的 LQ 数量, 每张 LQ 生成 1 张 pred
 #validation_image: null            # 单张 LQ 路径 / 列表 / null (= 自动)
 validation_prompt: ""             # 与 validation_image 一一对应, 默认空
 validation_guidance_scale: 5.0

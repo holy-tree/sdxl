@@ -288,6 +288,9 @@ def _log_validation(
             )
 
     if text_encoders is not None and tokenizers is not None and scheduler is not None:
+        for te in text_encoders:
+            if te is not None:
+                te.eval()
         pipeline = StableDiffusionXLControlNetPipeline(
             vae=vae,
             text_encoder=text_encoders[0],
@@ -297,6 +300,7 @@ def _log_validation(
             unet=unet,
             controlnet=controlnet,
             scheduler=scheduler,
+            force_zeros_for_empty_prompt=True,
         )
     else:
         pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
@@ -374,38 +378,31 @@ def _log_validation(
             if gt_pil is not None:
                 gt_pil.save(weather_dir / f"{sample_idx:03d}_{stem}_gt.png")
 
-            # 生成 num_validation_images 张 pred, 各自单独保存
-            images: List[Image.Image] = []
-            for sample_n in range(args.num_validation_images):
-                with autocast_ctx:
-                    image = pipeline(
-                        prompt=val_prompt,
-                        image=cond,
-                        num_inference_steps=args.validation_inference_steps,
-                        guidance_scale=args.validation_guidance_scale,
-                        negative_prompt=args.validation_negative_prompt,
-                        generator=generator,
-                    ).images[0]
-                images.append(image)
+            # 每张 LQ 生成 1 张 pred
+            with autocast_ctx:
+                image = pipeline(
+                    prompt=val_prompt,
+                    image=cond,
+                    num_inference_steps=args.validation_inference_steps,
+                    guidance_scale=args.validation_guidance_scale,
+                    negative_prompt=args.validation_negative_prompt,
+                    generator=generator,
+                ).images[0]
+            pred_name = f"{sample_idx:03d}_{stem}_pred.png"
+            image.save(weather_dir / pred_name)
 
-                if args.num_validation_images > 1:
-                    pred_name = f"{sample_idx:03d}_{stem}_sample{sample_n:02d}_pred.png"
-                else:
-                    pred_name = f"{sample_idx:03d}_{stem}_pred.png"
-                image.save(weather_dir / pred_name)
-
-                if gt_pil is not None:
-                    pred_t = _pil_to_tensor_01(image)
-                    gt_t = _pil_to_tensor_01(gt_pil)
-                    weather_metric_lists[weather]["psnr"].append(_calc_psnr(pred_t, gt_t))
-                    weather_metric_lists[weather]["ssim"].append(_calc_ssim(pred_t, gt_t))
-                    gt_count += 1
+            if gt_pil is not None:
+                pred_t = _pil_to_tensor_01(image)
+                gt_t = _pil_to_tensor_01(gt_pil)
+                weather_metric_lists[weather]["psnr"].append(_calc_psnr(pred_t, gt_t))
+                weather_metric_lists[weather]["ssim"].append(_calc_ssim(pred_t, gt_t))
+                gt_count += 1
 
             image_logs_for_tracker.append({
                 "weather": weather,
                 "stem": stem,
                 "validation_image": cond,
-                "images": images,
+                "images": [image],
                 "gt_pil": gt_pil,
             })
 
@@ -445,7 +442,7 @@ def _log_validation(
         f.write(f"Timestamp: {timestamp}\n")
         f.write(f"Inference steps: {args.validation_inference_steps}\n")
         f.write(f"Guidance scale: {args.validation_guidance_scale}\n")
-        f.write(f"Num samples per weather: {args.num_validation_images}\n\n")
+        f.write(f"LQ per weather: {args.num_validation_images}  |  Pred per LQ: 1\n\n")
         f.write("Per-weather metrics:\n")
         for w in sorted(weather_metric_lists):
             psnrs = weather_metric_lists[w]["psnr"]
