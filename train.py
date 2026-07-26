@@ -883,6 +883,21 @@ def main() -> None:
                 )
 
                 controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype, non_blocking=non_blocking)
+
+                # ===== DEBUG: 每 N 步打印一次关键统计 =====
+                _dbg_step = accelerator.sync_gradients and (global_step % 50 == 0 or global_step < 5)
+                if _dbg_step:
+                    with torch.no_grad():
+                        print(f"\n[DEBUG step {global_step}]")
+                        print(f"  cond_image:    shape={tuple(controlnet_image.shape)}  "
+                              f"min={controlnet_image.float().min().item():.3f}  "
+                              f"max={controlnet_image.float().max().item():.3f}  "
+                              f"mean={controlnet_image.float().mean().item():.3f}")
+                        print(f"  noisy_latents: shape={tuple(noisy_latents.shape)}  "
+                              f"min={noisy_latents.float().min().item():.3f}  "
+                              f"max={noisy_latents.float().max().item():.3f}  "
+                              f"std={noisy_latents.float().std().item():.3f}")
+
                 down_res, mid_res = controlnet(
                     noisy_latents,
                     timesteps,
@@ -891,6 +906,22 @@ def main() -> None:
                     controlnet_cond=controlnet_image,
                     return_dict=False,
                 )
+
+                if _dbg_step:
+                    with torch.no_grad():
+                        for j, d in enumerate(down_res):
+                            df = d.float()
+                            print(f"  cn_down_res[{j}]: shape={tuple(d.shape)}  "
+                                  f"min={df.min().item():.3f}  max={df.max().item():.3f}  "
+                                  f"std={df.std().item():.3f}  "
+                                  f"has_nan={torch.isnan(df).any().item()}  "
+                                  f"has_inf={torch.isinf(df).any().item()}")
+                        mf = mid_res.float()
+                        print(f"  cn_mid_res:     shape={tuple(mid_res.shape)}  "
+                              f"min={mf.min().item():.3f}  max={mf.max().item():.3f}  "
+                              f"std={mf.std().item():.3f}  "
+                              f"has_nan={torch.isnan(mf).any().item()}  "
+                              f"has_inf={torch.isinf(mf).any().item()}")
 
                 model_pred = unet(
                     noisy_latents,
@@ -904,6 +935,15 @@ def main() -> None:
                     return_dict=False,
                 )[0]
 
+                if _dbg_step:
+                    with torch.no_grad():
+                        mp_f = model_pred.float()
+                        print(f"  unet_pred:      shape={tuple(model_pred.shape)}  "
+                              f"min={mp_f.min().item():.3f}  max={mp_f.max().item():.3f}  "
+                              f"std={mp_f.std().item():.3f}  "
+                              f"has_nan={torch.isnan(mp_f).any().item()}  "
+                              f"has_inf={torch.isinf(mp_f).any().item()}")
+
                 if noise_scheduler.config.prediction_type == "epsilon":
                     target = noise
                 elif noise_scheduler.config.prediction_type == "v_prediction":
@@ -913,7 +953,28 @@ def main() -> None:
 
                 loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
+                # ===== DEBUG: loss 检查 =====
+                if _dbg_step or torch.isnan(loss).any().item() or torch.isinf(loss).any().item():
+                    print(f"  loss:           value={loss.item():.5f}  "
+                          f"is_nan={torch.isnan(loss).any().item()}")
+
                 accelerator.backward(loss)
+
+                # ===== DEBUG: 梯度 NaN 检测 (在 optimizer.step 之前) =====
+                if accelerator.sync_gradients and (global_step % 50 == 0 or global_step < 5):
+                    has_grad_nan = False
+                    max_grad = 0.0
+                    for p in controlnet.parameters():
+                        if p.grad is not None:
+                            g = p.grad.float()
+                            if torch.isnan(g).any() or torch.isinf(g).any():
+                                has_grad_nan = True
+                                break
+                            max_grad = max(max_grad, g.abs().max().item())
+                    if has_grad_nan:
+                        print(f"  ⚠ GRAD has NaN/Inf at step {global_step}")
+                    print(f"  max_grad_abs = {max_grad:.4f}")
+
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(controlnet.parameters(), args.max_grad_norm)
                 optimizer.step()
