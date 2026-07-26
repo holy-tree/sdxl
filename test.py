@@ -302,13 +302,13 @@ def main() -> None:
         if args.print_color_stats:
             _color_stats(cond_pil, "LQ(cond)")
 
-        prompt = base_prompt or (_auto_prompt_for(lq_path.stem, weather_prompts) if auto_prompt else "")
-
         gt_pil: Optional[Image.Image] = None
         gt_match = _maybe_match_gt(lq_path, gt_dir)
         if gt_match is not None:
             gt_pil = Image.open(gt_match).convert("RGB")
             gt_pil = center_crop(resize(gt_pil))
+            if args.print_color_stats:
+                _color_stats(gt_pil, "GT")
 
         for sample_idx in range(int(args.sample_times or 1)):
             generator = None
