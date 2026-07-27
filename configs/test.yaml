@@ -9,16 +9,19 @@
 # ---------- 模型路径 ----------
 pretrained_model_name_or_path: "stabilityai/stable-diffusion-xl-base-1.0"
 pretrained_vae_model_name_or_path: null
-controlnet_path: "./experiment/weather_controlnet"
+controlnet_path: "/root/autodl-tmp/sdxl/experiment/weather_controlnet/checkpoint-18000/controlnet"
 variant: null                     # null | fp16 | bf16
 revision: null
 
 # ---------- 输入 / 输出 ----------
-lq_dir: "/root/autodl-tmp/datasets/snow/test/LQ"
-gt_dir: "/root/autodl-tmp/datasets/snow/test/GT"                     # 可选: 用于生成 GT | LQ | Restored 三联图
+test_dataset_root: "/root/autodl-tmp/datasets_test"  # 自动读取 rain/snow/haze 下所有子集gt/lq
+num_samples_per_weather: 50       # 每个天气评估多少张图
+num_save_per_weather: 10          # 每个天气保存多少张图（restored + compare）
+lq_dir: null                      # 旧模式（单目录）, 与 test_dataset_root 二选一
+gt_dir: null                      # 旧模式（单目录）, 与 test_dataset_root 二选一
 output_dir: "/root/autodl-tmp/sdxl/experiment/test_results"
 file_extension: ".jpg"            # 输入图扩展名
-limit: 3                       # 最多处理多少张图, null = 全部
+limit: 3                          # 最多处理多少张图, null = 全部（仅旧模式有效）
 
 # ---------- 推理参数 ----------
 resolution: 512
@@ -40,7 +43,7 @@ auto_weather_prompt: false        # true: 根据文件名 weather_xxx.png 自动
 
 # ---------- 后处理 ----------
 conditioning_type: "lq"           # lq | gray | canny
-align_method: "none"              # none | wavelet | adain
+align_method: "adain"             # none | wavelet | adain (默认 adain 兜底色差: 把 PRED RGB 通道均值/方差对齐到 LQ)
 save_individual: true             # 单独保存恢复结果
 save_comparison: true             # 保存 LQ | Restored | GT 三联图
 

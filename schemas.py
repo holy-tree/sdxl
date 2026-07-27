@@ -246,6 +246,9 @@ class TestConfig:
     output_dir: str = "./experiment/test_results"
     file_extension: str = ".png"
     limit: Optional[int] = None
+    test_dataset_root: Optional[str] = None
+    num_samples_per_weather: int = 50
+    num_save_per_weather: int = 10
 
     # ----- inference -----
     resolution: int = 512
