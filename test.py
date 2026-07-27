@@ -269,40 +269,47 @@ def _wrap_vae_decode_for_fp32(vae):
 
 
 def _wrap_controlnet_for_fp32(controlnet):
-    """Wrap controlnet forward so that bf16 inputs (noisy_latents, encoder_hidden_states)
-    are cast to fp32 before entering the fp32 ControlNet.
+    """Wrap controlnet forward so that bf16 inputs are cast to fp32 before entering
+    the fp32 ControlNet, and fp32 outputs are cast back to bf16 for the bf16 UNet.
     训练时 ControlNet 是 fp32 (train.py:656), 推理保持 fp32 才能精确还原 residual 幅度,
-    但 scheduler / text_encoder 输出是 bf16, 这里统一在入口 cast.
+    但 scheduler / text_encoder / UNet 是 bf16, 所以入口 cast to fp32, 出口 cast back.
     """
     original_forward = controlnet.forward
     def _wrapped(sample, timestep, encoder_hidden_states, controlnet_cond, **kwargs):
-        target_dtype = next(controlnet.parameters()).dtype
+        target_dtype = next(controlnet.parameters()).dtype  # fp32
+        orig_dtype = sample.dtype  # bf16
         if sample.dtype != target_dtype:
             sample = sample.to(target_dtype)
         if encoder_hidden_states.dtype != target_dtype:
             encoder_hidden_states = encoder_hidden_states.to(target_dtype)
         if controlnet_cond.dtype != target_dtype:
             controlnet_cond = controlnet_cond.to(target_dtype)
-        # added_cond_kwargs 也需要 cast (text_embeds / time_ids)
         if "added_cond_kwargs" in kwargs and kwargs["added_cond_kwargs"] is not None:
             ackw = kwargs["added_cond_kwargs"]
             kwargs["added_cond_kwargs"] = {
                 k: (v.to(target_dtype) if torch.is_tensor(v) and v.dtype != target_dtype else v)
                 for k, v in ackw.items()
             }
-        return original_forward(
+        down_res, mid_res = original_forward(
             sample, timestep, encoder_hidden_states, controlnet_cond, **kwargs
         )
+        # cast outputs back to orig_dtype (bf16) so UNet does not get mixed dtype
+        down_res = tuple(r.to(orig_dtype) for r in down_res)
+        mid_res = mid_res.to(orig_dtype)
+        return (down_res, mid_res)
     controlnet.forward = _wrapped
 
 
-def _discover_test_datasets(root: Path) -> Dict[str, List[Tuple[Path, Path]]]:
-    """Auto-discover (lq, gt) pairs under root/{weather}/{sub_dataset}/{gt,lq}/."""
-    weathers: Dict[str, List[Tuple[Path, Path]]] = {}
+def _discover_test_datasets(root: Path) -> Dict[str, Dict[str, List[Tuple[Path, Path]]]]:
+    """Auto-discover (lq, gt) pairs under root/{weather}/{sub_dataset}/{gt,lq}/.
+
+    Returns: {weather: {sub_dataset: [(lq_path, gt_path), ...]}}
+    """
+    weathers: Dict[str, Dict[str, List[Tuple[Path, Path]]]] = {}
     for weather_dir in sorted(root.iterdir()):
         if not weather_dir.is_dir() or weather_dir.name.startswith("."):
             continue
-        pairs: List[Tuple[Path, Path]] = []
+        sub_datasets: Dict[str, List[Tuple[Path, Path]]] = {}
         for sub_dir in sorted(weather_dir.iterdir()):
             if not sub_dir.is_dir():
                 continue
@@ -313,10 +320,11 @@ def _discover_test_datasets(root: Path) -> Dict[str, List[Tuple[Path, Path]]]:
             gt_names = {p.name for p in gt_dir.iterdir() if _is_image(p)}
             lq_names = {p.name for p in lq_dir.iterdir() if _is_image(p)}
             common = sorted(gt_names & lq_names)
-            for name in common:
-                pairs.append((lq_dir / name, gt_dir / name))
-        if pairs:
-            weathers[weather_dir.name] = pairs
+            if common:
+                pairs = [(lq_dir / name, gt_dir / name) for name in common]
+                sub_datasets[sub_dir.name] = pairs
+        if sub_datasets:
+            weathers[weather_dir.name] = sub_datasets
     return weathers
 
 
@@ -502,67 +510,94 @@ def main() -> None:
         weather_datasets = _discover_test_datasets(test_root)
         if not weather_datasets:
             raise FileNotFoundError(f"在 {test_root} 下未找到任何天气数据集 (需要 rain/snow/haze/*/{{gt,lq}}/ 结构)")
-        print(f"[setup] 发现 {len(weather_datasets)} 个天气: {', '.join(weather_datasets.keys())}")
-        for w, pairs in weather_datasets.items():
-            print(f"  {w}: {len(pairs)} 对")
+        total_pairs = sum(sum(len(p) for p in subs.values()) for subs in weather_datasets.values())
+        print(f"[setup] 发现 {len(weather_datasets)} 个天气, 共 {total_pairs} 对")
+        for w, subs in weather_datasets.items():
+            print(f"  {w}: {', '.join(f'{k}({len(v)})' for k, v in subs.items())}")
 
         num_samples = int(getattr(args, "num_samples_per_weather", 50))
-        per_weather_metrics: Dict[str, Tuple[float, float]] = {}
+        summary_lines: List[str] = []
 
         for weather in sorted(weather_datasets.keys()):
-            pairs = weather_datasets[weather]
-            rng = random.Random(args.seed)
-            rng.shuffle(pairs)
-            eval_pairs = pairs[:num_samples]
-            save_pairs = pairs[:num_save]
-
-            out_w = out_root / weather
-            out_w_restored = out_w / "restored"
-            out_w_compare = out_w / "compare"
-            out_w_restored.mkdir(parents=True, exist_ok=True)
-            if args.save_comparison:
-                out_w_compare.mkdir(parents=True, exist_ok=True)
-
-            print(f"\n{'=' * 60}")
-            print(f"[{weather}] 处理 {len(eval_pairs)}/{len(pairs)} 对 (保存前 {min(len(save_pairs), num_save)} 对)")
-
+            sub_datasets = weather_datasets[weather]
+            n_subs = len(sub_datasets)
+            # 在子集间均匀分配 num_samples
+            per_sub = num_samples // n_subs if n_subs else 0
+            remainder = num_samples % n_subs
             prompt = weather_prompts.get(weather, base_prompt)
+
             w_psnr: List[float] = []
             w_ssim: List[float] = []
             w_times: List[float] = []
+            sub_lines: List[str] = []
 
-            for pi, (lq_p, gt_p) in enumerate(eval_pairs):
-                save_this = pi < len(save_pairs)
-                restored_out = out_w_restored if save_this else None
-                cmp_out = out_w_compare if save_this and args.save_comparison else None
-                r_psnr, r_ssim, r_dt = _evaluate_one(
-                    lq_p, gt_p, prompt,
-                    restored_out, cmp_out,
-                    weather, pi,
-                )
-                w_times.append(r_dt)
-                if r_psnr is not None:
-                    w_psnr.append(r_psnr)
-                    w_ssim.append(r_ssim)
+            for si, sub_name in enumerate(sorted(sub_datasets.keys())):
+                all_pairs = sub_datasets[sub_name]
+                alloc = per_sub + (1 if si < remainder else 0)
+                alloc = min(alloc, len(all_pairs))
+                rng = random.Random(args.seed)
+                rng.shuffle(all_pairs)
+                eval_pairs = all_pairs[:alloc]
+                n_save = min(len(eval_pairs), num_save)
+
+                out_sub = out_root / weather / sub_name
+                out_restored = out_sub / "restored"
+                out_compare = out_sub / "compare"
+                out_restored.mkdir(parents=True, exist_ok=True)
+                if args.save_comparison:
+                    out_compare.mkdir(parents=True, exist_ok=True)
+
+                print(f"\n{'─' * 50}")
+                print(f"[{weather}/{sub_name}] 评估 {len(eval_pairs)}/{len(all_pairs)} 对 (保存 {n_save} 对)")
+
+                sub_psnr: List[float] = []
+                sub_ssim: List[float] = []
+                sub_times: List[float] = []
+
+                for pi, (lq_p, gt_p) in enumerate(eval_pairs):
+                    save_this = pi < n_save
+                    r_out = out_restored if save_this else None
+                    c_out = out_compare if save_this and args.save_comparison else None
+                    r_psnr, r_ssim, r_dt = _evaluate_one(
+                        lq_p, gt_p, prompt,
+                        r_out, c_out,
+                        f"{weather}/{sub_name}", pi,
+                    )
+                    sub_times.append(r_dt)
+                    if r_psnr is not None:
+                        sub_psnr.append(r_psnr)
+                        sub_ssim.append(r_ssim)
+
+                if sub_psnr:
+                    m_psnr = np.mean(sub_psnr)
+                    m_ssim = np.mean(sub_ssim)
+                    sub_lines.append(f"  {sub_name:20s}: psnr={m_psnr:.2f}  ssim={m_ssim:.4f}  (n={len(sub_psnr)})")
+                    w_psnr.extend(sub_psnr)
+                    w_ssim.extend(sub_ssim)
+                    w_times.extend(sub_times)
+                    all_psnr.extend(sub_psnr)
+                    all_ssim.extend(sub_ssim)
+                    all_times.extend(sub_times)
 
             if w_psnr:
-                mean_psnr = np.mean(w_psnr)
-                mean_ssim = np.mean(w_ssim)
-                print(f"\n[{weather}] avg_psnr={mean_psnr:.2f}dB  avg_ssim={mean_ssim:.4f}  (n={len(w_psnr)})")
-                per_weather_metrics[weather] = (mean_psnr, mean_ssim)
-                all_psnr.extend(w_psnr)
-                all_ssim.extend(w_ssim)
-                all_times.extend(w_times)
+                w_mean_psnr = np.mean(w_psnr)
+                w_mean_ssim = np.mean(w_ssim)
+                summary_lines.append(f"\nWeather: {weather}")
+                summary_lines.extend(sub_lines)
+                summary_lines.append(f"  {'[avg]':20s}: psnr={w_mean_psnr:.2f}  ssim={w_mean_ssim:.4f}  (n={len(w_psnr)})")
+                print(f"\n[{weather}] avg_psnr={w_mean_psnr:.2f}dB  avg_ssim={w_mean_ssim:.4f}  (n={len(w_psnr)})")
 
         # ── 总体汇总 ──
         if all_psnr:
+            summary_lines.append(f"\n{'Overall':20s}: psnr={np.mean(all_psnr):.2f}  ssim={np.mean(all_ssim):.4f}  (n={len(all_psnr)})")
+            summary_lines.append(f"{'Time':20s}: avg={np.mean(all_times):.3f}s  total={np.sum(all_times):.2f}s")
+            summary_lines.append(f"output: {out_root}")
+            summary_path = out_root / "summary.txt"
+            summary_path.write_text("\n".join(summary_lines))
             print(f"\n{'=' * 60}")
             print("[Result Summary]")
-            for weather, (p, s) in per_weather_metrics.items():
-                print(f"  {weather:10s}: psnr={p:.2f}dB  ssim={s:.4f}")
-            print(f"  {'Overall':10s}: psnr={np.mean(all_psnr):.2f}dB  ssim={np.mean(all_ssim):.4f}  (n={len(all_psnr)})")
-            print(f"  {'Time':10s}: avg={np.mean(all_times):.3f}s  total={np.sum(all_times):.2f}s")
-            print(f"  output: {out_root}")
+            print("\n".join(summary_lines))
+            print(f"\n(summary saved to {summary_path})")
 
     # ── Legacy mode (单目录 lq_dir / gt_dir) ─────────────────────────
     else:
