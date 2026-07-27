@@ -501,7 +501,7 @@ def main() -> None:
         test_root = Path(args.test_dataset_root)  # type: ignore[arg-type]
         weather_datasets = _discover_test_datasets(test_root)
         if not weather_datasets:
-            raise FileNotFoundError(f"在 {test_root} 下未找到任何天气数据集 (需要 rain/snow/haze/*/{ {gt,lq}/ } 结构)")
+            raise FileNotFoundError(f"在 {test_root} 下未找到任何天气数据集 (需要 rain/snow/haze/*/{{gt,lq}}/ 结构)")
         print(f"[setup] 发现 {len(weather_datasets)} 个天气: {', '.join(weather_datasets.keys())}")
         for w, pairs in weather_datasets.items():
             print(f"  {w}: {len(pairs)} 对")
