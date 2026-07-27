@@ -166,16 +166,15 @@ def _build_pipeline(args, device: torch.device, weight_dtype: torch.dtype) -> St
     print(f"[load] pretrained = {args.pretrained_model_name_or_path}")
     print(f"[load] controlnet = {args.controlnet_path}")
 
-    # VAE fp32 (force_upcast 设计); ControlNet bf16 (匹配训练 autocast 计算精度)
-    controlnet = ControlNetModel.from_pretrained(args.controlnet_path, torch_dtype=weight_dtype)
+    # VAE fp32 (force_upcast 设计); ControlNet fp32 (匹配训练); UNet/text_encoder bf16
+    # ControlNet 训练时强制 fp32 (train.py:656), 推理也保持 fp32 才能精确还原 residual 幅度
+    controlnet = ControlNetModel.from_pretrained(args.controlnet_path, torch_dtype=torch.float32)
     pipeline = StableDiffusionXLControlNetPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
         controlnet=controlnet,
-        # 不传 torch_dtype, 让各组件保留 from_pretrained 默认 fp32
         variant=getattr(args, "variant", None),
         revision=getattr(args, "revision", None),
     )
-    # UNet 默认 fp32, 显式转 bf16 (匹配训练); text_encoder 默认 fp16, 转 bf16 避免 dtype mismatch
     pipeline.unet.to(weight_dtype)
     pipeline.text_encoder.to(weight_dtype)
     pipeline.text_encoder_2.to(weight_dtype)
@@ -206,6 +205,10 @@ def _build_pipeline(args, device: torch.device, weight_dtype: torch.dtype) -> St
     # 训练时 VAE 是 fp32, 推理保持 fp32 decode 才能避免精度损失导致输出偏暗
     if pipeline.vae.dtype != weight_dtype:
         _wrap_vae_decode_for_fp32(pipeline.vae)
+    # 训练时 ControlNet 也是 fp32, 推理保持 fp32 才能精确还原 residual 幅度
+    # bf16 noisy_latents / encoder_hidden_states 在 fp32 ControlNet 前自动 cast
+    if pipeline.controlnet.dtype != weight_dtype:
+        _wrap_controlnet_for_fp32(pipeline.controlnet)
     if getattr(args, "enable_model_cpu_offload", False) and device.type == "cuda":
         pipeline.enable_model_cpu_offload()
     else:
@@ -222,6 +225,34 @@ def _wrap_vae_decode_for_fp32(vae):
             latents = latents.to(vae.dtype)
         return original_decode(latents, *args, **kwargs)
     vae.decode = _wrapped
+
+
+def _wrap_controlnet_for_fp32(controlnet):
+    """Wrap controlnet forward so that bf16 inputs (noisy_latents, encoder_hidden_states)
+    are cast to fp32 before entering the fp32 ControlNet.
+    训练时 ControlNet 是 fp32 (train.py:656), 推理保持 fp32 才能精确还原 residual 幅度,
+    但 scheduler / text_encoder 输出是 bf16, 这里统一在入口 cast.
+    """
+    original_forward = controlnet.forward
+    def _wrapped(sample, timestep, encoder_hidden_states, controlnet_cond, **kwargs):
+        target_dtype = next(controlnet.parameters()).dtype
+        if sample.dtype != target_dtype:
+            sample = sample.to(target_dtype)
+        if encoder_hidden_states.dtype != target_dtype:
+            encoder_hidden_states = encoder_hidden_states.to(target_dtype)
+        if controlnet_cond.dtype != target_dtype:
+            controlnet_cond = controlnet_cond.to(target_dtype)
+        # added_cond_kwargs 也需要 cast (text_embeds / time_ids)
+        if "added_cond_kwargs" in kwargs and kwargs["added_cond_kwargs"] is not None:
+            ackw = kwargs["added_cond_kwargs"]
+            kwargs["added_cond_kwargs"] = {
+                k: (v.to(target_dtype) if torch.is_tensor(v) and v.dtype != target_dtype else v)
+                for k, v in ackw.items()
+            }
+        return original_forward(
+            sample, timestep, encoder_hidden_states, controlnet_cond, **kwargs
+        )
+    controlnet.forward = _wrapped
 
 
 def parse_args() -> argparse.Namespace:
@@ -269,12 +300,15 @@ def main() -> None:
     gt_dir = Path(args.gt_dir) if args.gt_dir else None
     print(f"[setup] 共找到 {len(lq_paths)} 张输入图 (gt_dir={gt_dir})")
 
-    out_root = Path(args.output_dir)
+    # 每次测试用独立时间戳文件夹, 避免覆盖之前的输出
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    out_root = Path(args.output_dir) / timestamp
     out_restored = out_root / "restored"
     out_compare = out_root / "compare"
     out_restored.mkdir(parents=True, exist_ok=True)
     if args.save_comparison:
         out_compare.mkdir(parents=True, exist_ok=True)
+    print(f"[output] root = {out_root}")
 
     pipeline = _build_pipeline(args, device, weight_dtype)
     if args.print_model_info:
